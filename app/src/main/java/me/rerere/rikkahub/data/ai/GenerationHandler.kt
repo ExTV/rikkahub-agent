@@ -290,6 +290,10 @@ class GenerationHandler(
         tools: List<Tool> = emptyList(),
         maxSteps: Int = 32,
         processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
+        // Called after a tool result has been emitted and persisted, before the next model
+        // request is built. The callback may return a compacted request history; the returned
+        // list is request-only and does not replace the conversation's original messages.
+        onAfterToolExecution: suspend (List<UIMessage>) -> List<UIMessage>? = { null },
         // Returns true when the user has pre-approved [toolName] for this turn (e.g.
         // "Allow for this chat" or "Always Allow" granted earlier). When true, the loop
         // below skips the Pending flip and lets the tool execute. ChatService injects the
@@ -874,6 +878,11 @@ class GenerationHandler(
                     )
                 )
             )
+
+            onAfterToolExecution(messages)?.let { compactedMessages ->
+                Log.i(TAG, "generateText: replacing request history after tool execution")
+                messages = compactedMessages
+            }
         }
 
     }

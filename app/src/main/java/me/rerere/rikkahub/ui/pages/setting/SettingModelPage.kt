@@ -5,28 +5,41 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -40,6 +53,7 @@ import me.rerere.hugeicons.stroke.AiEditing
 import me.rerere.hugeicons.stroke.ArrowRight01
 import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.datastore.AutoCompactionThresholdMode
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.ui.components.ai.ModelListSheet
 import me.rerere.rikkahub.ui.components.ai.rememberModelListState
@@ -165,6 +179,133 @@ private fun ModelSettingsPage(settings: Settings, vm: SettingVM, contentPadding:
                 modelId = settings.compressModelId,
                 providers = settings.providers,
                 onSelect = { vm.updateSettings(settings.copy(compressModelId = it.id)) },
+            )
+        }
+        item {
+            AutoCompactionSettingItem(settings = settings, vm = vm)
+        }
+    }
+}
+
+@Composable
+private fun AutoCompactionSettingItem(
+    settings: Settings,
+    vm: SettingVM,
+) {
+    var threshold by remember(settings.autoCompactionThresholdPercent) {
+        mutableFloatStateOf(settings.autoCompactionThresholdPercent.toFloat())
+    }
+    var tokenThreshold by remember(settings.autoCompactionThresholdTokensK) {
+        mutableStateOf(settings.autoCompactionThresholdTokensK.toString())
+    }
+
+    CardGroup {
+        item(
+            headlineContent = {
+                Text(stringResource(R.string.setting_model_page_enable_auto_compaction))
+            },
+            supportingContent = {
+                Text(stringResource(R.string.setting_model_page_enable_auto_compaction_desc))
+            },
+            trailingContent = {
+                Switch(
+                    checked = settings.enableAutoCompaction,
+                    onCheckedChange = {
+                        vm.updateSettings(settings.copy(enableAutoCompaction = it))
+                    },
+                )
+            },
+        )
+        if (settings.enableAutoCompaction) {
+            item(
+                headlineContent = {
+                    Text(stringResource(R.string.setting_model_page_auto_compaction_threshold))
+                },
+                supportingContent = {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(stringResource(R.string.setting_model_page_auto_compaction_threshold_desc))
+                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                            val modes = listOf(
+                                AutoCompactionThresholdMode.PERCENT to
+                                    stringResource(R.string.setting_model_page_auto_compaction_mode_percent),
+                                AutoCompactionThresholdMode.TOKENS to
+                                    stringResource(R.string.setting_model_page_auto_compaction_mode_tokens),
+                            )
+                            modes.forEachIndexed { index, (mode, label) ->
+                                SegmentedButton(
+                                    shape = SegmentedButtonDefaults.itemShape(index, modes.size),
+                                    selected = settings.autoCompactionThresholdMode == mode,
+                                    onClick = {
+                                        if (settings.autoCompactionThresholdMode != mode) {
+                                            vm.updateSettings(settings.copy(autoCompactionThresholdMode = mode))
+                                        }
+                                    },
+                                ) {
+                                    Text(label)
+                                }
+                            }
+                        }
+                        if (settings.autoCompactionThresholdMode == AutoCompactionThresholdMode.PERCENT) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Slider(
+                                    value = threshold,
+                                    onValueChange = { value ->
+                                        threshold = (value / 5f).toInt().times(5).toFloat()
+                                    },
+                                    onValueChangeFinished = {
+                                        vm.updateSettings(
+                                            settings.copy(
+                                                autoCompactionThresholdPercent = threshold.toInt()
+                                            )
+                                        )
+                                    },
+                                    valueRange = 5f..95f,
+                                    steps = 17,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text("${threshold.toInt()}%")
+                            }
+                        } else {
+                            OutlinedTextField(
+                                value = tokenThreshold,
+                                onValueChange = { value ->
+                                    tokenThreshold = value.filter(Char::isDigit).take(7)
+                                },
+                                singleLine = true,
+                                suffix = { Text("k") },
+                                label = {
+                                    Text(stringResource(R.string.setting_model_page_auto_compaction_tokens))
+                                },
+                                supportingText = {
+                                    Text(stringResource(R.string.setting_model_page_auto_compaction_tokens_desc))
+                                },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .onFocusChanged { focusState ->
+                                        if (!focusState.isFocused) {
+                                            val parsed = tokenThreshold.toIntOrNull()
+                                            if (parsed == null) {
+                                                tokenThreshold = settings.autoCompactionThresholdTokensK.toString()
+                                            } else {
+                                                val normalized = parsed.coerceIn(1, Int.MAX_VALUE / 1_000)
+                                                tokenThreshold = normalized.toString()
+                                                if (normalized != settings.autoCompactionThresholdTokensK) {
+                                                    vm.updateSettings(
+                                                        settings.copy(autoCompactionThresholdTokensK = normalized)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    },
+                            )
+                        }
+                    }
+                },
             )
         }
     }

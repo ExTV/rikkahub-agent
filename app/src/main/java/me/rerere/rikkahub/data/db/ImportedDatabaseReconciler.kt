@@ -23,7 +23,7 @@ import java.io.File
  * This step runs once, right after the restore writes `rikka_hub.db`, on the raw file before
  * Room touches it:
  *  - It creates any of the fork-only tables that are missing, empty, with the exact schema
- *    Room expects (copied verbatim from app/schemas/.../27.json), so the file looks like a
+ *    Room expects (copied verbatim from app/schemas/.../28.json), so the file looks like a
  *    clean agent install for those tables.
  *  - If the file is already at the fork's current schema (stamped at the matching version, or
  *    an upstream file whose shared tables already carry every modern column), it stamps Room's
@@ -48,14 +48,14 @@ object ImportedDatabaseReconciler {
 
     /**
      * Room's schema version and identity hash for [AppDatabase]. Both are copied verbatim
-     * from app/schemas/me.rerere.rikkahub.data.db.AppDatabase/27.json (the identity hash also
+     * from app/schemas/me.rerere.rikkahub.data.db.AppDatabase/28.json (the identity hash also
      * appears in the generated AppDatabase_Impl RoomOpenDelegate). When the schema version is
      * bumped, update BOTH constants (and the table DDL below if the fork-only tables changed,
      * and MODERN_COLUMN_SENTINELS if newer conversation columns were added) or this
      * reconciliation will silently stop matching.
      */
-    private const val EXPECTED_VERSION = 27
-    private const val EXPECTED_IDENTITY_HASH = "47dc97ce825856b039f96c2769103dd1"
+    private const val EXPECTED_VERSION = 28
+    private const val EXPECTED_IDENTITY_HASH = "d3949c752e5a34360f2dd618bfbc40cd"
 
     /**
      * Columns that a restored file must already have for its shared schema to be considered
@@ -66,6 +66,9 @@ object ImportedDatabaseReconciler {
      * v27 carries only a prefix, so it still migrates normally.
      */
     private val MODERN_COLUMN_SENTINELS = listOf("custom_system_prompt", "workspace_cwd", "folder_id")
+
+    private const val CONTEXT_COMPACTION_DDL =
+        "CREATE TABLE IF NOT EXISTS `conversation_compaction` (`conversation_id` TEXT NOT NULL, `summary` TEXT NOT NULL, `tail_start_node_id` TEXT, `source_end_node_id` TEXT NOT NULL, `summary_model_id` TEXT NOT NULL, `is_auto` INTEGER NOT NULL, `source_token_estimate` INTEGER NOT NULL, `created_at` INTEGER NOT NULL, PRIMARY KEY(`conversation_id`), FOREIGN KEY(`conversation_id`) REFERENCES `ConversationEntity`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )"
 
     /**
      * Fork-only tables absent from an upstream backup, with their exact v25 create + index
@@ -132,6 +135,10 @@ object ImportedDatabaseReconciler {
                     FORK_ONLY_DDL.forEach(db::execSQL)
 
                     if (version == EXPECTED_VERSION || alreadyCurrent) {
+                        // v28 adds this table through Room's 27->28 auto-migration. Imported
+                        // upstream databases and genuine v27 fork databases are stamped straight
+                        // to v28 here, so create the table before installing the v28 identity.
+                        db.execSQL(CONTEXT_COMPACTION_DDL)
                         // No migration should run: the file is either already stamped at the
                         // fork's version, or it is an upstream file whose shared schema already
                         // matches it. Point Room's identity row and user_version at the fork so

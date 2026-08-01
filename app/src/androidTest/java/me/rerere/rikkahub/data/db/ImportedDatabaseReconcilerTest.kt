@@ -20,10 +20,11 @@ import org.junit.runner.RunWith
  *
  * Upstream 2.4.1 stamps its database at user_version 24, but its ConversationEntity already
  * carries custom_system_prompt / workspace_cwd / folder_id (upstream added them at its own
- * earlier versions). The fork's schema-equivalent version is 27, so an un-reconciled restore
+ * earlier versions). The fork's shared-schema-equivalent version is 27, so an un-reconciled restore
  * makes Room replay the fork's 24 -> 25 auto-migration, which re-ADDs custom_system_prompt and
  * crashes. The fork's shared tables at v27 are byte-for-byte identical to upstream's at v24, so
- * [ImportedDatabaseReconciler] stamps such a file straight to v27 and skips the replay.
+ * [ImportedDatabaseReconciler] adds the fork's v28 compaction table, stamps the file to v28, and
+ * skips the replay.
  *
  * The test builds a faithful upstream-2.4.1 file (fork v27 shared schema, upstream's version +
  * identity, fork-only tables removed) and asserts:
@@ -42,7 +43,7 @@ class ImportedDatabaseReconcilerTest {
 
     private val FORK_ONLY_TABLES = listOf(
         "scheduled_jobs", "scheduled_job_runs", "ssh_hosts", "telegram_chats",
-        "workflows", "workflow_runs", "agent_runs",
+        "workflows", "workflow_runs", "agent_runs", "conversation_compaction",
     )
 
     private val context: Context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -113,7 +114,7 @@ class ImportedDatabaseReconcilerTest {
 
     /**
      * Writes a file that looks exactly like an upstream RikkaHub 2.4.1 backup: start from a
-     * genuine fork v27 database (Room creates every table and stamps the v27 identity), seed a
+     * genuine fork v28 database (Room creates every table and stamps the v28 identity), seed a
      * conversation, then downgrade the file on disk by dropping the fork-only tables and
      * stamping upstream's user_version + identity.
      */

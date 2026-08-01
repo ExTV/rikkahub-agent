@@ -268,7 +268,7 @@
   <string name="chat_page_compress_keep_recent">最近のメッセージを保持</string>
   <string name="chat_page_compress_not_enough_messages">圧縮するためのメッセージが不足しています。保持するメッセージ数を減らすか、メッセージを追加してください。</string>
   <string name="chat_page_compress_target_tokens">ターゲットトークンサイズ</string>
-  <string name="chat_page_compress_warning">⚠️ コンテキストを圧縮すると、現在の会話のすべてのメッセージがリセットされます</string>
+  <string name="chat_page_compress_warning">圧縮ではモデルに送信するコンテキスト要約のみが更新され、元のメッセージは保持されます。</string>
   <string name="chat_page_compressing">圧縮中…</string>
   <string name="chat_page_conversation_system_prompt">会話システムプロンプト</string>
   <string name="chat_page_conversation_system_prompt_clear">クリア</string>
@@ -1774,5 +1774,12 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="chat_page_delete_folder_generating">フォルダ内の一部の会話がまだ生成中です。削除する前にそれらを停止してください。</string>
   <string name="setting_display_page_tts_read_outside_brackets_title">TTS 括弧内を読み上げない</string>
   <string name="setting_display_page_tts_read_outside_brackets_desc">有効にすると、TTS は括弧内の内容を読み上げません</string>
+  <string name="setting_model_page_enable_auto_compaction">コンテキストの自動圧縮を有効にする</string>
+  <string name="setting_model_page_enable_auto_compaction_desc">会話がモデルのコンテキスト上限に近づくと、古いメッセージを自動的に要約します</string>
+  <string name="setting_model_page_auto_compaction_threshold">圧縮しきい値</string>
+  <string name="setting_model_page_auto_compaction_threshold_desc">コンテキストのしきい値を選択します。推定値が選択した割合またはトークン数に達すると自動圧縮を開始します。</string>
+  <string name="setting_model_page_auto_compaction_mode_percent">割合</string>
+  <string name="setting_model_page_auto_compaction_mode_tokens">トークン数</string>
+  <string name="setting_model_page_auto_compaction_tokens">トークンしきい値</string>
+  <string name="setting_model_page_auto_compaction_tokens_desc">千トークン単位でしきい値を入力します。8k は 8,000 トークンを意味します。</string>
 </resources>
-

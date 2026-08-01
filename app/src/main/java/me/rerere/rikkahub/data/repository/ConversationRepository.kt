@@ -15,12 +15,15 @@ import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.fts.MessageFtsManager
 import me.rerere.rikkahub.data.db.fts.MessageSearchSort
 import me.rerere.rikkahub.data.db.dao.ConversationDAO
+import me.rerere.rikkahub.data.db.dao.ConversationCompactionDAO
 import me.rerere.rikkahub.data.db.dao.FavoriteDAO
 import me.rerere.rikkahub.data.db.dao.MessageNodeDAO
 import me.rerere.rikkahub.data.db.entity.ConversationEntity
+import me.rerere.rikkahub.data.db.entity.ConversationCompactionEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.ConversationCompaction
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.utils.JsonInstant
 import java.time.Instant
@@ -28,6 +31,7 @@ import kotlin.uuid.Uuid
 
 class ConversationRepository(
     private val conversationDAO: ConversationDAO,
+    private val conversationCompactionDAO: ConversationCompactionDAO,
     private val messageNodeDAO: MessageNodeDAO,
     private val favoriteDAO: FavoriteDAO,
     private val database: AppDatabase,
@@ -281,6 +285,39 @@ class ConversationRepository(
 
     suspend fun countConversations(): Int {
         return conversationDAO.countAll()
+    }
+
+    suspend fun getCompaction(conversationId: Uuid): ConversationCompaction? =
+        conversationCompactionDAO.getByConversationId(conversationId.toString())?.let { entity ->
+            ConversationCompaction(
+                conversationId = Uuid.parse(entity.conversationId),
+                summary = entity.summary,
+                tailStartNodeId = entity.tailStartNodeId?.let(Uuid::parse),
+                sourceEndNodeId = Uuid.parse(entity.sourceEndNodeId),
+                summaryModelId = Uuid.parse(entity.summaryModelId),
+                isAuto = entity.isAuto,
+                sourceTokenEstimate = entity.sourceTokenEstimate,
+                createdAt = Instant.ofEpochMilli(entity.createdAt),
+            )
+        }
+
+    suspend fun upsertCompaction(compaction: ConversationCompaction) {
+        conversationCompactionDAO.upsert(
+            ConversationCompactionEntity(
+                conversationId = compaction.conversationId.toString(),
+                summary = compaction.summary,
+                tailStartNodeId = compaction.tailStartNodeId?.toString(),
+                sourceEndNodeId = compaction.sourceEndNodeId.toString(),
+                summaryModelId = compaction.summaryModelId.toString(),
+                isAuto = compaction.isAuto,
+                sourceTokenEstimate = compaction.sourceTokenEstimate,
+                createdAt = compaction.createdAt.toEpochMilli(),
+            )
+        )
+    }
+
+    suspend fun clearCompaction(conversationId: Uuid) {
+        conversationCompactionDAO.deleteByConversationId(conversationId.toString())
     }
 
     suspend fun insertConversation(conversation: Conversation) {

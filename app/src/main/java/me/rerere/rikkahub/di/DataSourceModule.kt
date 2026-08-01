@@ -120,6 +120,10 @@ val dataSourceModule = module {
     }
 
     single {
+        get<AppDatabase>().conversationCompactionDao()
+    }
+
+    single {
         get<AppDatabase>().memoryDao()
     }
 

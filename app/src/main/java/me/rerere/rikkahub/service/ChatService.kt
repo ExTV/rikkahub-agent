@@ -46,6 +46,7 @@ import me.rerere.ai.ui.canResumeToolExecution
 import me.rerere.ai.ui.finishPendingTools
 import me.rerere.ai.ui.finishReasoning
 import me.rerere.ai.ui.isEmptyInputMessage
+import me.rerere.ai.ui.limitContext
 import me.rerere.common.android.Logging
 import me.rerere.rikkahub.AppScope
 import android.app.PendingIntent
@@ -62,6 +63,9 @@ import me.rerere.rikkahub.utils.sendNotification
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
+import me.rerere.rikkahub.data.ai.ContextBudgetPlanner
+import me.rerere.rikkahub.data.ai.CompactedMessageView
+import me.rerere.rikkahub.data.ai.ContextCompactionView
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
@@ -81,6 +85,8 @@ import me.rerere.rikkahub.data.ai.transformers.WorkspaceReminderTransformer
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.datastore.AutoCompactionThresholdMode
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getAssistantById
@@ -89,6 +95,7 @@ import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.ConversationCompaction
 import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.replaceRegexes
 import me.rerere.rikkahub.data.model.toMessageNode
@@ -106,6 +113,34 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.uuid.Uuid
 
 private const val TAG = "ChatService"
+
+private fun Throwable.isContextLimitError(): Boolean {
+    val markers = listOf(
+        "context length",
+        "context window",
+        "maximum context",
+        "max context",
+        "context length exceeded",
+        "maximum tokens",
+        "prompt is too long",
+        "prompt too long",
+        "too many tokens",
+        "token limit",
+        "input is too long",
+        "exceeds the model",
+        "exceed.*context",
+    )
+    return generateSequence(this) { it.cause }
+        .take(8)
+        .any { cause ->
+            val text = (cause.message.orEmpty() + " " + cause.toString())
+                .lowercase()
+                .replace('_', ' ')
+            markers.any { marker ->
+                if (marker.contains(".*")) Regex(marker).containsMatchIn(text) else marker in text
+            }
+        }
+}
 
 internal fun backgroundTextGenerationParams(
     model: Model,
@@ -184,6 +219,10 @@ class ChatService(
     private fun mutexFor(conversationId: Uuid): Mutex =
         sessionMutexes.getOrPut(conversationId) { Mutex() }
 
+    private val compactionMutexes = ConcurrentHashMap<Uuid, Mutex>()
+    private fun compactionMutexFor(conversationId: Uuid): Mutex =
+        compactionMutexes.getOrPut(conversationId) { Mutex() }
+
     /**
      * Hydrate the in-memory session for [conversationId] from disk if it's currently
      * blank. Used by entry points (callback handlers, approval handlers) that may be hit
@@ -249,6 +288,7 @@ class ChatService(
         sessions.values.forEach { it.cleanup() }
         sessions.clear()
         sessionMutexes.clear()
+        compactionMutexes.clear()
     }.onFailure {
         // Don't let a teardown hiccup escape, but don't swallow it silently either —
         // a failure here can leave the lifecycle observer registered (slow leak).
@@ -288,6 +328,7 @@ class ChatService(
             // was previously missing this cleanup, causing a slow leak on heavy-use
             // sessions where many conversations cycle in and out of memory.
             sessionMutexes.remove(conversationId)
+            compactionMutexes.remove(conversationId)
             _sessionsVersion.value++
             Log.i(TAG, "removeSession: $conversationId (remaining: ${sessions.size})")
         }
@@ -303,6 +344,7 @@ class ChatService(
         val session = sessions.remove(conversationId) ?: return
         session.cleanup()
         sessionMutexes.remove(conversationId)
+        compactionMutexes.remove(conversationId)
         _sessionsVersion.value++
         Log.i(TAG, "dropSession: $conversationId (remaining: ${sessions.size})")
     }
@@ -388,12 +430,19 @@ class ChatService(
 
         val session = getOrCreateSession(conversationId)
         val previousJob = session.getJob()
+        val previousGenerationWasActive = previousJob?.isActive == true
         previousJob?.cancel()
 
         val job = appScope.launch {
             try {
                 runCatching { previousJob?.join() }
-                finishInterruptedPendingTools(conversationId)
+                // Only a still-running generation was interrupted by this send. A completed
+                // failed turn may leave an old pending tool in history, but relabelling every
+                // such node as "Generation cancelled by user" corrupts the original failure
+                // and makes several earlier context-overflow attempts look user-cancelled.
+                if (previousGenerationWasActive) {
+                    finishInterruptedPendingTools(conversationId)
+                }
 
                 val currentConversation = session.state.value
                 // Resolve the assistant from the conversation's own assistantId, not the
@@ -585,6 +634,7 @@ class ChatService(
                     Log.w(TAG, "regenerateAtMessage: node for message ${message.id} not in conversation; skipping")
                     return@launch
                 }
+                conversationRepo.clearCompaction(conversationId)
                 if (message.role == MessageRole.USER) {
                     // 如果是用户消息，则截止到当前消息
                     val newConversation = conversation.copy(
@@ -750,7 +800,8 @@ class ChatService(
 
     private suspend fun handleMessageComplete(
         conversationId: Uuid,
-        messageRange: ClosedRange<Int>? = null
+        messageRange: ClosedRange<Int>? = null,
+        allowContextRetry: Boolean = true,
     ) {
         val settings = settingsStore.settingsFlow.first()
         // Resolve the assistant from this conversation's own assistantId — the global
@@ -789,7 +840,7 @@ class ChatService(
             model.displayName
         }
 
-        runCatching {
+        val generationResult = runCatching {
             // reset suggestions
             updateConversation(conversationId, initialConversation.copy(chatSuggestions = emptyList()))
 
@@ -810,6 +861,25 @@ class ChatService(
 
             // start generating
             val session = getOrCreateSession(conversationId)
+            var compactedMessageView = if (messageRange == null) {
+                prepareMessagesForGeneration(
+                    conversation = conversation,
+                    settings = settings,
+                    assistant = assistant,
+                    model = model,
+                    processingStatus = session.processingStatus,
+                )
+            } else {
+                null
+            }
+            val messagesForGeneration = if (messageRange != null) {
+                conversation.currentMessages.subList(
+                    messageRange.start,
+                    messageRange.endInclusive + 1,
+                )
+            } else {
+                compactedMessageView!!.messages
+            }
             generationHandler.generateText(
                 settings = settings,
                 model = model,
@@ -855,13 +925,54 @@ class ChatService(
                             toolApprovalPreferences.current().contains(toolName)
                     }
                 },
-                messages = conversation.currentMessages.let {
-                    if (messageRange != null) {
-                        it.subList(messageRange.start, messageRange.endInclusive + 1)
+                onAfterToolExecution = { generatedMessages ->
+                    if (messageRange != null || !settings.enableAutoCompaction) {
+                        null
                     } else {
-                        it
+                        val actualPromptTokens = generatedMessages.lastOrNull()?.usage
+                            ?.promptTokens
+                            ?.takeIf { it > 0 }
+                        val triggerTokens = when (settings.autoCompactionThresholdMode) {
+                            AutoCompactionThresholdMode.PERCENT -> model.contextLength
+                                ?.takeIf { it > 0 }
+                                ?.let { length ->
+                                    (length.toLong() * settings.autoCompactionThresholdPercent
+                                        .coerceIn(5, 95) / 100L)
+                                        .coerceAtLeast(1L)
+                                        .toInt()
+                                }
+                            AutoCompactionThresholdMode.TOKENS ->
+                                (settings.autoCompactionThresholdTokensK
+                                    .coerceAtLeast(1)
+                                    .toLong() * 1_000L)
+                                    .coerceAtMost(Int.MAX_VALUE.toLong())
+                                    .toInt()
+                        }
+                        if (actualPromptTokens == null ||
+                            triggerTokens == null ||
+                            actualPromptTokens < triggerTokens
+                        ) {
+                            null
+                        } else {
+                            Log.i(
+                                TAG,
+                                "Actual prompt usage reached compaction threshold after tool execution: " +
+                                    "$actualPromptTokens >= $triggerTokens",
+                            )
+                            val compacted = prepareMessagesForGeneration(
+                                conversation = getConversationFlow(conversationId).value,
+                                settings = settings,
+                                assistant = assistant,
+                                model = model,
+                                processingStatus = session.processingStatus,
+                                force = true,
+                            )
+                            compactedMessageView = compacted
+                            compacted.messages
+                        }
                     }
                 },
+                messages = messagesForGeneration,
                 assistant = assistant,
                 conversationSystemPrompt = conversation.customSystemPrompt,
                 conversationModeInjectionIds = conversation.modeInjectionIds,
@@ -986,8 +1097,16 @@ class ChatService(
             }.collect { chunk ->
                 when (chunk) {
                     is GenerationChunk.Messages -> {
-                        val updatedConversation = getConversationFlow(conversationId).value
-                            .updateCurrentMessages(chunk.messages)
+                        val currentConversation = getConversationFlow(conversationId).value
+                        val updatedConversation = if (compactedMessageView?.compaction != null) {
+                            ContextCompactionView.mergeGeneratedMessages(
+                                conversation = currentConversation,
+                                view = compactedMessageView,
+                                generatedMessages = chunk.messages,
+                            )
+                        } else {
+                            currentConversation.updateCurrentMessages(chunk.messages)
+                        }
                         updateConversation(conversationId, updatedConversation)
 
                         // Persist immediately when a tool transitions to "execution
@@ -1015,7 +1134,53 @@ class ChatService(
                     }
                 }
             }
-        }.onFailure {
+        }
+
+        val generationFailure = generationResult.exceptionOrNull()
+        val lastMessage = getConversationFlow(conversationId).value.currentMessages.lastOrNull()
+        // A tool round normally ends with an ASSISTANT message containing executed
+        // tool calls. That message is still a valid point for a context-limit retry:
+        // compact the conversation and retry after the tool results have been stored.
+        val canRetryAfterContextLimit =
+            lastMessage?.role != MessageRole.ASSISTANT ||
+                lastMessage.getTools().any { it.isExecuted }
+        if (
+            allowContextRetry &&
+            messageRange == null &&
+            settings.enableAutoCompaction &&
+            generationFailure != null &&
+            generationFailure.isContextLimitError() &&
+            canRetryAfterContextLimit
+        ) {
+            // Some providers omit context_length metadata or reject requests because their
+            // system/tool schema overhead is larger than the local estimate. Force one
+            // compaction pass and retry the same user turn once before surfacing the provider
+            // error. The partial-output guard above prevents duplicating an already-streamed
+            // assistant response.
+            val session = getOrCreateSession(conversationId)
+            val forcedView = runCatching {
+                prepareMessagesForGeneration(
+                    conversation = getConversationFlow(conversationId).value,
+                    settings = settings,
+                    assistant = assistant,
+                    model = model,
+                    processingStatus = session.processingStatus,
+                    force = true,
+                )
+            }.onFailure {
+                Log.w(TAG, "Context-limit retry compaction failed", it)
+            }.getOrNull()
+            if (forcedView?.compaction != null) {
+                handleMessageComplete(
+                    conversationId = conversationId,
+                    messageRange = null,
+                    allowContextRetry = false,
+                )
+                return
+            }
+        }
+
+        generationResult.onFailure {
             // 取消 Live Update 通知
             cancelLiveUpdateNotification(conversationId)
 
@@ -1063,7 +1228,7 @@ class ChatService(
 
     // ---- 检查无效消息 ----
 
-    private fun checkInvalidMessages(conversationId: Uuid) {
+    private suspend fun checkInvalidMessages(conversationId: Uuid) {
         val conversation = getConversationFlow(conversationId).value
         var messagesNodes = conversation.messageNodes
 
@@ -1108,7 +1273,10 @@ class ChatService(
         // 移除无效消息
         messagesNodes = messagesNodes.filter { it.messages.isNotEmpty() }
 
-        updateConversation(conversationId, conversation.copy(messageNodes = messagesNodes))
+        if (messagesNodes != conversation.messageNodes) {
+            conversationRepo.clearCompaction(conversationId)
+            updateConversation(conversationId, conversation.copy(messageNodes = messagesNodes))
+        }
     }
 
     private fun cancelToolByUser(tool: UIMessagePart.Tool): UIMessagePart.Tool {
@@ -1131,6 +1299,9 @@ class ChatService(
             return
         }
 
+        // The newest user send can interrupt only the latest generation. Keep every older
+        // node byte-for-byte intact so historical pending/failed tool records are not
+        // rewritten as if the user cancelled them now.
         val updatedConversation = currentConversation.copy(
             messageNodes = currentConversation.messageNodes.dropLast(1) + lastNode.copy(
                 messages = lastNode.messages.map { message ->
@@ -1249,6 +1420,156 @@ class ChatService(
 
     // ---- 压缩对话历史 ----
 
+    private suspend fun prepareMessagesForGeneration(
+        conversation: Conversation,
+        settings: Settings,
+        assistant: Assistant,
+        model: Model,
+        processingStatus: MutableStateFlow<String?>,
+        force: Boolean = false,
+    ): CompactedMessageView {
+        var view = loadCompactedMessageView(conversation)
+        if (!settings.enableAutoCompaction) {
+            return if (view.compaction?.isAuto == true) {
+                ContextCompactionView.build(conversation, null)
+            } else {
+                view
+            }
+        }
+
+        // Automatic compaction is deliberately driven by provider-reported usage after a
+        // tool result, or by an actual context-limit error. Do not estimate the history here
+        // and compact before the model has had a chance to execute its tools.
+        if (!force) return view
+
+        val contextMessages = { current: CompactedMessageView ->
+            current.messages.limitContext(assistant.contextMessageSize)
+        }
+        val knownContextLength = model.contextLength?.takeIf { it > 0 }
+        val contextLength = knownContextLength ?: run {
+            // A provider that omits context_length can still be compacted after it reports an
+            // actual overflow. The estimate is used only to choose a tail for the summary, not
+            // to decide whether compaction should start.
+            ContextBudgetPlanner.estimateInputTokens(contextMessages(view))
+                .coerceAtLeast(1)
+        }
+
+        Log.i(
+            TAG,
+            "Auto compaction starting for ${conversation.id}: " +
+                "provider usage reached the configured threshold or context limit, " +
+                "context=$contextLength",
+        )
+        processingStatus.value = context.getString(R.string.chat_page_compressing)
+        try {
+            val compaction = compactionMutexFor(conversation.id).withLock {
+                val latestConversation = getConversationFlow(conversation.id).value
+                view = loadCompactedMessageView(latestConversation)
+                // A previous compaction may already cover every raw message. This can
+                // happen when the provider reports another boundary before a new message
+                // is appended. There is no further source material to summarize, so keep
+                // the existing summary and continue with the compacted request view.
+                if (
+                    view.compaction != null &&
+                    view.rawTailStartIndex >= latestConversation.messageNodes.size
+                ) {
+                    Log.i(TAG, "Auto compaction skipped: no new raw messages after existing summary")
+                    view.compaction
+                } else {
+                    val latestContextLength = model.contextLength?.takeIf { it > 0 }
+                        ?: ContextBudgetPlanner.estimateInputTokens(contextMessages(view)).coerceAtLeast(1)
+                    createAutomaticCompaction(
+                        conversation = latestConversation,
+                        currentView = view,
+                        settings = settings,
+                        contextLength = latestContextLength,
+                        // Forced compaction happens after a provider-reported threshold/overflow.
+                        // Keep a conservative recent tail without reintroducing a preflight trigger.
+                        triggerTokens = latestContextLength,
+                    )
+                }
+            }
+            val latestConversation = getConversationFlow(conversation.id).value
+            return ContextCompactionView.build(latestConversation, compaction)
+        } finally {
+            processingStatus.value = null
+        }
+    }
+
+    private suspend fun loadCompactedMessageView(conversation: Conversation): CompactedMessageView {
+        val compaction = conversationRepo.getCompaction(conversation.id)
+            ?: return CompactedMessageView(
+                messages = conversation.currentMessages,
+                compaction = null,
+                rawTailStartIndex = 0,
+            )
+        val view = ContextCompactionView.build(conversation, compaction)
+        if (view.compaction == null) {
+            conversationRepo.clearCompaction(conversation.id)
+        }
+        return view
+    }
+
+    private suspend fun createAutomaticCompaction(
+        conversation: Conversation,
+        currentView: CompactedMessageView,
+        settings: Settings,
+        contextLength: Int,
+        triggerTokens: Int,
+    ): ConversationCompaction {
+        if (conversation.messageNodes.size < 2) {
+            throw IllegalStateException(context.getString(R.string.chat_page_compress_not_enough_messages))
+        }
+
+        val summaryOffset = if (currentView.compaction == null) 0 else 1
+        val triggerPercent = (triggerTokens.toLong() * 100L / contextLength.toLong())
+            .coerceIn(0L, 100L)
+            .toInt()
+        val tailBudgetPercent = (triggerPercent - 20).coerceIn(25, 50)
+        val tailBudget = (contextLength.toLong() * tailBudgetPercent / 100L)
+            .coerceIn(512L, Int.MAX_VALUE.toLong())
+            .toInt()
+        val viewTailStart = ContextBudgetPlanner.chooseTailStartIndex(
+            messages = currentView.messages,
+            targetTokens = tailBudget,
+        )
+        val minimumRawTailStart = if (currentView.compaction == null) {
+            1
+        } else {
+            currentView.rawTailStartIndex + 1
+        }
+        val rawTailStartIndex = (
+            currentView.rawTailStartIndex + viewTailStart - summaryOffset
+            ).coerceAtLeast(minimumRawTailStart)
+
+        // A subsequent compaction may legitimately consume the final raw tail message,
+        // leaving the persisted summary as the only request-context prefix. The summary
+        // entity uses a null tailStartNodeId to represent this boundary at messageNodes.size.
+        if (rawTailStartIndex !in 1..conversation.messageNodes.size) {
+            throw IllegalStateException(context.getString(R.string.chat_page_compress_not_enough_messages))
+        }
+
+        val messagesToCompress = buildList {
+            currentView.compaction?.let { add(UIMessage.user(it.summary)) }
+            addAll(
+                conversation.currentMessages.subList(
+                    currentView.rawTailStartIndex,
+                    rawTailStartIndex,
+                )
+            )
+        }
+        val summaryTargetTokens = (contextLength / 10).coerceIn(500, 2_000)
+        return generateAndStoreCompaction(
+            conversation = conversation,
+            settings = settings,
+            messagesToCompress = messagesToCompress,
+            rawTailStartIndex = rawTailStartIndex,
+            additionalPrompt = "",
+            targetTokens = summaryTargetTokens,
+            isAuto = true,
+        )
+    }
+
     suspend fun compressConversation(
         conversationId: Uuid,
         conversation: Conversation,
@@ -1256,7 +1577,50 @@ class ChatService(
         targetTokens: Int,
         keepRecentMessages: Int = 32
     ): Result<Unit> = runCatching {
-        val settings = settingsStore.settingsFlow.first()
+        compactionMutexFor(conversationId).withLock {
+            val latestConversation = getConversationFlow(conversationId).value
+                .takeIf { it.messageNodes.isNotEmpty() }
+                ?: conversation
+            val allMessages = latestConversation.currentMessages
+            val rawTailStartIndex = when {
+                keepRecentMessages > 0 && allMessages.size > keepRecentMessages ->
+                    allMessages.size - keepRecentMessages
+                keepRecentMessages > 0 ->
+                    throw IllegalStateException(
+                        context.getString(R.string.chat_page_compress_not_enough_messages)
+                    )
+                allMessages.isNotEmpty() -> allMessages.size
+                else -> throw IllegalStateException(
+                    context.getString(R.string.chat_page_compress_not_enough_messages)
+                )
+            }
+
+            generateAndStoreCompaction(
+                conversation = latestConversation,
+                settings = settingsStore.settingsFlow.first(),
+                messagesToCompress = allMessages.take(rawTailStartIndex),
+                rawTailStartIndex = rawTailStartIndex,
+                additionalPrompt = additionalPrompt,
+                targetTokens = targetTokens.coerceAtLeast(1),
+                isAuto = false,
+            )
+        }
+    }
+
+    private suspend fun generateAndStoreCompaction(
+        conversation: Conversation,
+        settings: Settings,
+        messagesToCompress: List<UIMessage>,
+        rawTailStartIndex: Int,
+        additionalPrompt: String,
+        targetTokens: Int,
+        isAuto: Boolean,
+    ): ConversationCompaction {
+        require(messagesToCompress.isNotEmpty()) { "No messages selected for compression" }
+        require(rawTailStartIndex in 1..conversation.messageNodes.size) {
+            "Invalid compaction boundary"
+        }
+
         val model = settings.findModelById(settings.compressModelId)
             ?: settings.getCurrentChatModel()
             ?: throw IllegalStateException("No model available for compression")
@@ -1273,22 +1637,6 @@ class ChatService(
         val providerHandler = providerManager.getProviderByType(provider)
 
         val maxMessagesPerChunk = 256
-        val allMessages = conversation.currentMessages
-
-        // Split messages into those to compress and those to keep
-        val messagesToCompress: List<UIMessage>
-        val messagesToKeep: List<UIMessage>
-
-        if (keepRecentMessages > 0 && allMessages.size > keepRecentMessages) {
-            messagesToCompress = allMessages.dropLast(keepRecentMessages)
-            messagesToKeep = allMessages.takeLast(keepRecentMessages)
-        } else if (keepRecentMessages > 0) {
-            // Not enough messages to compress while keeping recent ones
-            throw IllegalStateException(context.getString(R.string.chat_page_compress_not_enough_messages))
-        } else {
-            messagesToCompress = allMessages
-            messagesToKeep = emptyList()
-        }
 
         fun splitMessages(messages: List<UIMessage>): List<List<UIMessage>> {
             if (messages.size <= maxMessagesPerChunk) return listOf(messages)
@@ -1325,19 +1673,28 @@ class ChatService(
                 .awaitAll()
         }
 
-        // Create new conversation with compressed history as multiple user messages + kept messages
-        val newMessageNodes = buildList {
-            compressedSummaries.forEach { summary ->
-                add(UIMessage.user(summary).toMessageNode())
-            }
-            addAll(messagesToKeep.map { it.toMessageNode() })
+        val expectedBoundary = conversation.messageNodes
+            .take(rawTailStartIndex)
+            .map { node -> node.id to node.currentMessage.id }
+        val latestBoundary = getConversationFlow(conversation.id).value.messageNodes
+            .take(rawTailStartIndex)
+            .map { node -> node.id to node.currentMessage.id }
+        check(expectedBoundary == latestBoundary) {
+            "Conversation changed while context was being compressed"
         }
-        val newConversation = conversation.copy(
-            messageNodes = newMessageNodes,
-            chatSuggestions = emptyList(),
-        )
 
-        saveConversation(conversationId, newConversation)
+        val compaction = ConversationCompaction(
+            conversationId = conversation.id,
+            summary = compressedSummaries.joinToString("\n\n").trim(),
+            tailStartNodeId = conversation.messageNodes.getOrNull(rawTailStartIndex)?.id,
+            sourceEndNodeId = conversation.messageNodes[rawTailStartIndex - 1].id,
+            summaryModelId = model.id,
+            isAuto = isAuto,
+            sourceTokenEstimate = ContextBudgetPlanner.estimateInputTokens(messagesToCompress),
+            createdAt = Instant.now(),
+        )
+        conversationRepo.upsertCompaction(compaction)
+        return compaction
     }
 
     // ---- 通知 ----
@@ -1659,6 +2016,7 @@ class ChatService(
 
         if (!edited) return
 
+        conversationRepo.clearCompaction(conversationId)
         saveConversation(conversationId, currentConversation.copy(messageNodes = updatedNodes))
     }
 
@@ -1727,6 +2085,7 @@ class ChatService(
             }
         }
 
+        conversationRepo.clearCompaction(conversationId)
         saveConversation(conversationId, currentConversation.copy(messageNodes = updatedNodes))
     }
 
@@ -1745,6 +2104,7 @@ class ChatService(
             return
         }
 
+        conversationRepo.clearCompaction(conversationId)
         saveConversation(conversationId, updatedConversation)
     }
 

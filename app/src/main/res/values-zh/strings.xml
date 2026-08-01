@@ -270,7 +270,7 @@
   <string name="chat_page_compress_keep_recent">保留最近的消息</string>
   <string name="chat_page_compress_not_enough_messages">消息数量不足，无法压缩。请减少保留的消息数量或添加更多消息。</string>
   <string name="chat_page_compress_target_tokens">目标Token大小</string>
-  <string name="chat_page_compress_warning">⚠️ 压缩上下文将重置当前对话中的所有消息</string>
+  <string name="chat_page_compress_warning">压缩只会更新发送给模型的上下文摘要，原始消息会保留。</string>
   <string name="chat_page_compressing">正在压缩...</string>
   <string name="chat_page_conversation_system_prompt">对话系统提示</string>
   <string name="chat_page_conversation_system_prompt_clear">清除</string>
@@ -1777,5 +1777,12 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="chat_page_folder_add">新建</string>
   <string name="chat_page_delete_folder_confirm">删除文件夹 "%1$s"？其中的对话不会被删除，只会从文件夹中移除。</string>
   <string name="chat_page_delete_folder_generating">此文件夹中有对话仍在生成中，请停止后再删除。</string>
+  <string name="setting_model_page_enable_auto_compaction">启用自动上下文压缩</string>
+  <string name="setting_model_page_enable_auto_compaction_desc">当对话接近模型的上下文上限时，自动总结较早的消息</string>
+  <string name="setting_model_page_auto_compaction_threshold">压缩阈值</string>
+  <string name="setting_model_page_auto_compaction_threshold_desc">选择上下文阈值。当估算值达到所选百分比或Token数量时开始自动压缩。</string>
+  <string name="setting_model_page_auto_compaction_mode_percent">百分比</string>
+  <string name="setting_model_page_auto_compaction_mode_tokens">Token数量</string>
+  <string name="setting_model_page_auto_compaction_tokens">Token阈值</string>
+  <string name="setting_model_page_auto_compaction_tokens_desc">输入以千Token为单位的阈值。例如，8k表示8000个Token。</string>
 </resources>
-

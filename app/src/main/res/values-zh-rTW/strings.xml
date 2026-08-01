@@ -268,7 +268,7 @@
   <string name="chat_page_compress_keep_recent">保留最近訊息</string>
   <string name="chat_page_compress_not_enough_messages">訊息不足，無法壓縮。請減少要保留的訊息數量，或新增更多訊息。</string>
   <string name="chat_page_compress_target_tokens">目標 Token 大小</string>
-  <string name="chat_page_compress_warning">⚠️ 壓縮上下文將重設目前對話中的所有訊息</string>
+  <string name="chat_page_compress_warning">壓縮只會更新傳送給模型的上下文摘要，原始訊息會保留。</string>
   <string name="chat_page_compressing">正在壓縮...</string>
   <string name="chat_page_conversation_system_prompt">對話系統提示</string>
   <string name="chat_page_conversation_system_prompt_clear">清除</string>
@@ -1772,4 +1772,12 @@
   <string name="chat_page_delete_folder_generating">此資料夾中的部分對話仍在生成中。請先停止它們再刪除。</string>
   <string name="setting_display_page_tts_read_outside_brackets_title">TTS 不朗讀括號內的內容</string>
   <string name="setting_display_page_tts_read_outside_brackets_desc">啟用後，TTS 將不朗讀括號內的內容</string>
+  <string name="setting_model_page_enable_auto_compaction">啟用自動上下文壓縮</string>
+  <string name="setting_model_page_enable_auto_compaction_desc">當對話接近模型的上下文上限時，自動摘要較早的訊息</string>
+  <string name="setting_model_page_auto_compaction_threshold">壓縮閾值</string>
+  <string name="setting_model_page_auto_compaction_threshold_desc">選擇上下文閾值。當估算值達到所選百分比或 Token 數量時開始自動壓縮。</string>
+  <string name="setting_model_page_auto_compaction_mode_percent">百分比</string>
+  <string name="setting_model_page_auto_compaction_mode_tokens">Token 數量</string>
+  <string name="setting_model_page_auto_compaction_tokens">Token 閾值</string>
+  <string name="setting_model_page_auto_compaction_tokens_desc">輸入以千個 Token 為單位的閾值。例如，8k 表示 8,000 個 Token。</string>
 </resources>

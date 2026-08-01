@@ -352,7 +352,7 @@
   <string name="chat_page_compress_keep_recent">الاحتفاظ بالرسائل الأخيرة</string>
   <string name="chat_page_compress_not_enough_messages">لا توجد رسائل كافية للضغط. قلّل عدد الرسائل المُحتفظ بها أو أضف المزيد من الرسائل.</string>
   <string name="chat_page_compress_target_tokens">حجم الرموز المستهدف</string>
-  <string name="chat_page_compress_warning">⚠️ ضغط السياق سيعيد تعيين جميع الرسائل في المحادثة الحالية</string>
+  <string name="chat_page_compress_warning">يحدّث الضغط ملخص السياق المرسل إلى النموذج فقط، مع الاحتفاظ بالرسائل الأصلية.</string>
   <string name="chat_page_compressing">جارٍ الضغط...</string>
   <string name="chat_page_delete">حذف</string>
   <string name="chat_page_dismiss_error">تجاهل الخطأ</string>
@@ -1490,4 +1490,12 @@
   <string name="skill_detail_save_failed">فشل الحفظ</string>
   <string name="update_download_description">جارٍ تنزيل التحديث…</string>
   <string name="chat_stop_generation_before_delete">من فضلك أوقف التوليد قبل حذف الرسائل</string>
+  <string name="setting_model_page_enable_auto_compaction">تمكين ضغط السياق تلقائيًا</string>
+  <string name="setting_model_page_enable_auto_compaction_desc">تلخيص الرسائل الأقدم تلقائيًا عندما تقترب المحادثة من حد سياق النموذج</string>
+  <string name="setting_model_page_auto_compaction_threshold">عتبة الضغط</string>
+  <string name="setting_model_page_auto_compaction_threshold_desc">اختر حد السياق. يبدأ الضغط التلقائي عندما يصل التقدير إلى النسبة المئوية أو عدد الرموز المحدد.</string>
+  <string name="setting_model_page_auto_compaction_mode_percent">النسبة المئوية</string>
+  <string name="setting_model_page_auto_compaction_mode_tokens">عدد الرموز</string>
+  <string name="setting_model_page_auto_compaction_tokens">عتبة الرموز</string>
+  <string name="setting_model_page_auto_compaction_tokens_desc">أدخل العتبة بآلاف الرموز. على سبيل المثال، 8k تعني 8,000 رمز.</string>
 </resources>

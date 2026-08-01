@@ -270,7 +270,7 @@
   <string name="chat_page_compress_keep_recent">Keep recent messages</string>
   <string name="chat_page_compress_not_enough_messages">Not enough messages to compress. Reduce the number of messages to keep or add more messages.</string>
   <string name="chat_page_compress_target_tokens">Target Token Size</string>
-  <string name="chat_page_compress_warning">⚠️ Compressing context will reset all messages in the current conversation</string>
+  <string name="chat_page_compress_warning">Compaction only updates the context summary sent to the model. Original messages are preserved.</string>
   <string name="chat_page_compressing">Compressing...</string>
   <string name="chat_page_conversation_system_prompt">Conversation System Prompt</string>
   <string name="chat_page_conversation_system_prompt_clear">Clear</string>
@@ -1879,4 +1879,12 @@
   <string name="chat_page_folder_add">New</string>
   <string name="chat_page_delete_folder_confirm">Delete folder "%1$s"? Conversations inside will not be deleted, only removed from the folder.</string>
   <string name="chat_page_delete_folder_generating">Some conversations in this folder are still generating. Please stop them before deleting.</string>
+  <string name="setting_model_page_enable_auto_compaction">Enable automatic context compaction</string>
+  <string name="setting_model_page_enable_auto_compaction_desc">Automatically summarize older messages when the conversation approaches the model context limit</string>
+  <string name="setting_model_page_auto_compaction_threshold">Compaction threshold</string>
+  <string name="setting_model_page_auto_compaction_threshold_desc">Choose a context threshold. Automatic compaction starts when the estimate reaches the selected percentage or token count.</string>
+  <string name="setting_model_page_auto_compaction_mode_percent">Percentage</string>
+  <string name="setting_model_page_auto_compaction_mode_tokens">Token count</string>
+  <string name="setting_model_page_auto_compaction_tokens">Token threshold</string>
+  <string name="setting_model_page_auto_compaction_tokens_desc">Enter the threshold in thousands of tokens. For example, 8k means 8,000 tokens.</string>
 </resources>
