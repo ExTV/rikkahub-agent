@@ -1151,7 +1151,6 @@
   <string name="setting_model_page_prompt_compress">Context Compression</string>
   <string name="setting_display_page_bubble_opacity_title">Bubble Opacity</string>
   <string name="setting_provider_page_include_history_reasoning">Include History Reasoning</string>
-
   <!-- fork (agent) strings preserved from merge -->
   <string name="assistant_page_local_tools_audio_info_desc">Read ringer mode, music-active state, headphone connection, and output devices.</string>
   <string name="assistant_page_local_tools_audio_info_title">Audio info</string>
@@ -1310,7 +1309,7 @@
   <string name="assistant_page_local_tools_termux_postgrant_copy">Copy command</string>
   <string name="assistant_page_local_tools_termux_postgrant_copied">Command copied — paste it into Termux.</string>
   <string name="assistant_page_local_tools_telegram_notoken_title">Telegram bot needs a token</string>
-  <string name="assistant_page_local_tools_telegram_notoken_message">The toggle is on, but no bot token is set yet.\n\nEasy way: ask the assistant in chat — &quot;Set up the Telegram bot, my token is …, my user id is …, set me as default chat, enable it.&quot;\n\nManual way: message @BotFather on Telegram with /newbot for a token, and @userinfobot with /start for your numeric user id. Then ask the assistant or paste them in Settings → Telegram bot.</string>
+  <string name="assistant_page_local_tools_telegram_notoken_message">The toggle is on, but no bot token is set yet.\n\nEasy way: ask the assistant in chat — "Set up the Telegram bot, my token is …, my user id is …, set me as default chat, enable it."\n\nManual way: message @BotFather on Telegram with /newbot for a token, and @userinfobot with /start for your numeric user id. Then ask the assistant or paste them in Settings → Telegram bot.</string>
   <string name="assistant_page_local_tools_cron_jobs_toast_hint">Heads up: scheduled jobs use the tools you have enabled. If a job calls SSH, Telegram, or any other tool, those toggles must also be on.</string>
   <string name="assistant_page_local_tools_dialog_dismiss">Got it</string>
   <string name="assistant_page_local_tools_termux_verify_no_permission">RUN_COMMAND permission not granted. Toggle Termux off then on to retry the system prompt.</string>
@@ -1333,7 +1332,7 @@
   <string name="setting_page_accessibility_status_section">Status</string>
   <string name="setting_page_accessibility_status_running">Service: Running</string>
   <string name="setting_page_accessibility_status_not_running">Service: Not running</string>
-  <string name="setting_page_accessibility_status_help">RikkaHub needs accessibility permission to perform taps, swipes, and read the screen for the LLM. Open Settings &#x2192; Accessibility &#x2192; Installed Apps &#x2192; RikkaHub and turn it on.</string>
+  <string name="setting_page_accessibility_status_help">RikkaHub needs accessibility permission to perform taps, swipes, and read the screen for the LLM. Open Settings → Accessibility → Installed Apps → RikkaHub and turn it on.</string>
   <string name="setting_page_accessibility_open_settings">Open Accessibility settings</string>
   <string name="setting_page_accessibility_diagnostics_section">Diagnostics</string>
   <string name="setting_page_accessibility_capture_diag">Capture diagnostic screenshot</string>
@@ -1428,7 +1427,7 @@
   <string name="setting_page_workflow_detail_delete_confirm_yes">Delete</string>
   <string name="setting_page_workflow_detail_delete_confirm_no">Cancel</string>
   <string name="setting_page_workflow_detail_run_now_done">Run finished: %1$s</string>
-  <string name="setting_page_workflow_detail_edit_prefill">Edit the workflow named &#8220;%1$s&#8221;.</string>
+  <string name="setting_page_workflow_detail_edit_prefill">Edit the workflow named “%1$s”.</string>
   <string name="setting_page_workflow_detail_stat_last_run">Last run: %1$s</string>
   <string name="setting_page_workflow_detail_stat_last_run_never">Last run: never</string>
   <string name="setting_page_workflow_detail_stat_runs_today">Today: %1$d run(s)</string>
@@ -1466,7 +1465,7 @@
   <string name="setting_page_scheduled_jobs_run_now_fired">Fire requested.</string>
   <string name="setting_page_scheduled_jobs_run_now_disabled">Job is paused — enable it first.</string>
   <string name="setting_page_scheduled_jobs_run_now_not_found">Job not found.</string>
-  <string name="setting_page_scheduled_jobs_edit_prefill">Edit the scheduled job named &#8220;%1$s&#8221;.</string>
+  <string name="setting_page_scheduled_jobs_edit_prefill">Edit the scheduled job named “%1$s”.</string>
   <string name="setting_page_scheduled_jobs_stat_last_run">Last run: %1$s</string>
   <string name="setting_page_scheduled_jobs_stat_last_run_never">Last run: never</string>
   <string name="setting_page_scheduled_jobs_stat_next_run">Next run: %1$s</string>
@@ -1606,7 +1605,7 @@
   <string name="setting_termux_apt_wrap_desc">Prepend DEBIAN_FRONTEND=noninteractive so apt upgrades do not hang waiting for interactive prompts.</string>
   <string name="setting_termux_section_help">Setup help</string>
   <string name="setting_termux_help_allow_external_apps_title">How to enable allow-external-apps</string>
-  <string name="setting_termux_help_allow_external_apps_body">In Termux, run:\n\n  mkdir -p ~/.termux\n  echo \'allow-external-apps=true\' >> ~/.termux/termux.properties\n\nThen force-stop Termux from Android App Info and reopen it. After that, tap the verify row above to confirm the link is working.</string>
+  <string name="setting_termux_help_allow_external_apps_body">In Termux, run:\n\n  mkdir -p ~/.termux\n  echo \'allow-external-apps=true\' &gt;&gt; ~/.termux/termux.properties\n\nThen force-stop Termux from Android App Info and reopen it. After that, tap the verify row above to confirm the link is working.</string>
   <string name="browser_address_bar_close">Close browser</string>
   <string name="browser_address_bar_back">Browser back</string>
   <string name="browser_address_bar_forward">Browser forward</string>
@@ -1645,7 +1644,7 @@
   <string name="local_llm_max_tokens_desc">Override the curated default. The model file\'s KV cache is the hard ceiling — Qwen ekv4096 caps at 4096 regardless. Capable models (Gemma 4 E2B = 32000) benefit from a larger value. Leave blank to use the curated default.</string>
   <string name="local_llm_max_tokens_placeholder">curated default</string>
   <string name="local_llm_max_tokens_reset">Reset</string>
-  <string name="local_llm_crash_recovery_format">Recovered: the local model crashed last session on %1$s — switched to CPU automatically. Tap to dismiss; toggle &#8220;Try GPU acceleration&#8221; below to retry.</string>
+  <string name="local_llm_crash_recovery_format">Recovered: the local model crashed last session on %1$s — switched to CPU automatically. Tap to dismiss; toggle “Try GPU acceleration” below to retry.</string>
   <string name="local_llm_delete_model">Delete model</string>
   <string name="local_llm_insufficient_memory_format">Need about %1$d MB of free RAM (model is %2$d MB plus runtime headroom) but only %3$d MB is available. Close other apps or pick a smaller model.</string>
   <string name="local_llm_install_url_label">Or paste a HuggingFace URL (/blob/ or /resolve/ both work)</string>
@@ -1887,4 +1886,6 @@
   <string name="setting_model_page_auto_compaction_mode_tokens">Token count</string>
   <string name="setting_model_page_auto_compaction_tokens">Token threshold</string>
   <string name="setting_model_page_auto_compaction_tokens_desc">Enter the threshold in thousands of tokens. For example, 8k means 8,000 tokens.</string>
+  <string name="setting_model_page_context_compaction_target">Compression target</string>
+  <string name="setting_model_page_context_compaction_target_desc">Set the target summary size in thousands of tokens. Leave blank to use 10% of the maximum context of the current chat model.</string>
 </resources>

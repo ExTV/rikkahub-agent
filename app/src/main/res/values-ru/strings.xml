@@ -1119,7 +1119,6 @@
   <string name="setting_model_page_fast_model">Быстрая модель</string>
   <string name="setting_model_page_fast_model_desc">Модель для быстрых или фоновых задач, также используется как резервная для моделей заголовков и предложений, если не задана</string>
   <string name="setting_model_page_enable_suggestion">Включить подсказки чата</string>
-
   <!-- fork (agent) strings preserved from merge -->
   <string name="setting_display_page_show_date_below_name_desc">Показывать дату сообщения под ником или названием модели</string>
   <string name="setting_display_page_show_date_below_name_title">Показывать дату под именем</string>
@@ -1211,7 +1210,7 @@
   <string name="assistant_page_local_tools_system_intents_desc">Позволяет ассистенту предзаполнять системные приложения для финального оформления вами: событие календаря, новый контакт, составитель письма, составитель SMS, настройки WiFi, Карты. Ничего не сохраняется и не отправляется без вашего нажатия в приложении назначения.</string>
   <string name="assistant_page_local_tools_system_intents_title">Системные намерения</string>
   <string name="assistant_page_local_tools_telegram_desc">Запуск ассистента как Telegram-бота — отправка/получение сообщений, файлов, управление /командами. Полностью настраивается через инструменты (задайте токен, белый список, чат по умолчанию, затем включите). Фоновая служба обрабатывает длинный опрос.</string>
-  <string name="assistant_page_local_tools_telegram_notoken_message">Переключатель включён, но токен бота ещё не задан.\n\nПростой способ: попросите ассистента в чате — &quot;Настрой Telegram-бота, мой токен …, мой ID пользователя …, сделай меня чатом по умолчанию, включи его.&quot;\n\nРучной способ: напишите @BotFather в Telegram /newbot для получения токена и @userinfobot /start для вашего числового ID пользователя. Затем попросите ассистента или вставьте их в Настройки → Telegram-бот.</string>
+  <string name="assistant_page_local_tools_telegram_notoken_message">Переключатель включён, но токен бота ещё не задан.\n\nПростой способ: попросите ассистента в чате — "Настрой Telegram-бота, мой токен …, мой ID пользователя …, сделай меня чатом по умолчанию, включи его."\n\nРучной способ: напишите @BotFather в Telegram /newbot для получения токена и @userinfobot /start для вашего числового ID пользователя. Затем попросите ассистента или вставьте их в Настройки → Telegram-бот.</string>
   <string name="assistant_page_local_tools_telegram_notoken_title">Telegram-боту нужен токен</string>
   <string name="assistant_page_local_tools_telegram_title">Telegram-бот</string>
   <string name="assistant_page_local_tools_telephony_desc">Чтение сведений о SIM и сети (оператор, тип сети). Требуется READ_PHONE_STATE.</string>
@@ -1279,10 +1278,10 @@
   <string name="local_llm_catalog_tag_speculative">Спекулятивное декодирование</string>
   <string name="local_llm_catalog_tag_thinking">Мышление</string>
   <string name="local_llm_catalog_title">Рекомендуемые модели</string>
-  <string name="local_llm_crash_recovery_format">Восстановлено: локальная модель аварийно завершилась в прошлой сессии на %1$s — автоматически переключено на CPU. Нажмите, чтобы закрыть; переключите &#8220;Попробовать ускорение GPU&#8221; ниже, чтобы повторить.</string>
+  <string name="local_llm_crash_recovery_format">Восстановлено: локальная модель аварийно завершилась в прошлой сессии на %1$s — автоматически переключено на CPU. Нажмите, чтобы закрыть; переключите “Попробовать ускорение GPU” ниже, чтобы повторить.</string>
   <string name="local_llm_default_disabled">Запуск открытых моделей на этом устройстве. Требуется загрузка ~1,5 ГБ (Qwen2.5 1.5B Q8).</string>
   <string name="local_llm_delete">Удалить</string>
-  <string name="local_llm_delete_confirm_message">Удалить &#8220;%1$s&#8221; с вашего устройства? Это удаляет файл (для использования его придётся загрузить снова).</string>
+  <string name="local_llm_delete_confirm_message">Удалить “%1$s” с вашего устройства? Это удаляет файл (для использования его придётся загрузить снова).</string>
   <string name="local_llm_delete_confirm_title">Удалить модель?</string>
   <string name="local_llm_delete_model">Удалить модель</string>
   <string name="local_llm_download_cancel">Отмена</string>
@@ -1398,7 +1397,7 @@
   <string name="setting_page_accessibility_overlay_open_settings">Предоставить «Поверх других приложений»</string>
   <string name="setting_page_accessibility_overlay_section">Наложение активности</string>
   <string name="setting_page_accessibility_recent_section">Недавние действия</string>
-  <string name="setting_page_accessibility_status_help">RikkaHub нужно разрешение специальных возможностей для выполнения нажатий, проведений и чтения экрана для LLM. Откройте Настройки &#x2192; Специальные возможности &#x2192; Установленные приложения &#x2192; RikkaHub и включите его.</string>
+  <string name="setting_page_accessibility_status_help">RikkaHub нужно разрешение специальных возможностей для выполнения нажатий, проведений и чтения экрана для LLM. Откройте Настройки → Специальные возможности → Установленные приложения → RikkaHub и включите его.</string>
   <string name="setting_page_accessibility_status_not_running">Служба: не работает</string>
   <string name="setting_page_accessibility_status_running">Служба: работает</string>
   <string name="setting_page_accessibility_status_section">Статус</string>
@@ -1453,7 +1452,7 @@
   <string name="setting_page_scheduled_jobs_delete_confirm_yes">Удалить</string>
   <string name="setting_page_scheduled_jobs_desc">Задачи на основе времени, запланированные ассистентом — однократные и повторяющиеся cron-выражения.</string>
   <string name="setting_page_scheduled_jobs_edit">Редактировать в чате</string>
-  <string name="setting_page_scheduled_jobs_edit_prefill">Редактировать запланированную задачу с именем &#8220;%1$s&#8221;.</string>
+  <string name="setting_page_scheduled_jobs_edit_prefill">Редактировать запланированную задачу с именем “%1$s”.</string>
   <string name="setting_page_scheduled_jobs_empty">Пока нет запланированных задач. Попросите ассистента создать одну.</string>
   <string name="setting_page_scheduled_jobs_hide_args">скрыть аргументы</string>
   <string name="setting_page_scheduled_jobs_history_empty">Срабатываний пока не записано.</string>
@@ -1523,7 +1522,7 @@
   <string name="setting_page_workflow_detail_delete_confirm_title">Удалить рабочий процесс?</string>
   <string name="setting_page_workflow_detail_delete_confirm_yes">Удалить</string>
   <string name="setting_page_workflow_detail_edit">Редактировать в чате</string>
-  <string name="setting_page_workflow_detail_edit_prefill">Редактировать рабочий процесс с именем &#8220;%1$s&#8221;.</string>
+  <string name="setting_page_workflow_detail_edit_prefill">Редактировать рабочий процесс с именем “%1$s”.</string>
   <string name="setting_page_workflow_detail_history_empty">Срабатываний пока не записано.</string>
   <string name="setting_page_workflow_detail_no_conditions">(нет)</string>
   <string name="setting_page_workflow_detail_run_now">Запустить сейчас</string>
@@ -1566,7 +1565,7 @@
   <string name="skill_catalog_installed">Установлено</string>
   <string name="skill_catalog_installing">Установка…</string>
   <string name="skill_catalog_title">Рекомендуемые навыки</string>
-  <string name="skill_detail_name_immutable">Изменение имени навыка не допускается (поле name должно быть &#8220;%1$s&#8221;)</string>
+  <string name="skill_detail_name_immutable">Изменение имени навыка не допускается (поле name должно быть “%1$s”)</string>
   <string name="skill_detail_save_failed">Не удалось сохранить</string>
   <string name="skill_import_empty_file">Файл пуст — нечего импортировать.</string>
   <string name="skill_import_from_file_label">Импорт из файла</string>
@@ -1782,4 +1781,6 @@
   <string name="setting_model_page_auto_compaction_mode_tokens">Количество токенов</string>
   <string name="setting_model_page_auto_compaction_tokens">Порог токенов</string>
   <string name="setting_model_page_auto_compaction_tokens_desc">Введите порог в тысячах токенов. Например, 8k означает 8 000 токенов.</string>
+  <string name="setting_model_page_context_compaction_target">Цель сжатия</string>
+  <string name="setting_model_page_context_compaction_target_desc">Укажите целевой размер сводки в тысячах токенов. Оставьте пустым, чтобы использовать 10% максимального контекста модели чата.</string>
 </resources>

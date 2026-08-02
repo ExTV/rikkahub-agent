@@ -1119,7 +1119,6 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="setting_model_page_fast_model">高速モデル</string>
   <string name="setting_model_page_fast_model_desc">高速タスクまたはバックグラウンドタスク用のモデル。タイトルモデルとサジェストモデルが設定されていない場合のフォールバックとしても使用されます。</string>
   <string name="setting_model_page_enable_suggestion">チャット提案を有効にする</string>
-
   <!-- fork (agent) strings preserved from merge -->
   <string name="setting_display_page_show_date_below_name_desc">ニックネームまたはモデル名の下にメッセージの日付を表示するかどうか</string>
   <string name="setting_display_page_show_date_below_name_title">名前の下に日付を表示</string>
@@ -1211,7 +1210,7 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="assistant_page_local_tools_system_intents_desc">アシスタントが最終確認用にシステムアプリを事前入力できます：カレンダー予定、新規連絡先、メール作成、SMS 作成、WiFi 設定、地図。宛先アプリでのあなたのタップなしには、何も保存も送信もされません。</string>
   <string name="assistant_page_local_tools_system_intents_title">システムインテント</string>
   <string name="assistant_page_local_tools_telegram_desc">アシスタントを Telegram ボットとして実行 — メッセージやファイルの送受信、/コマンドの管理。すべてツールで設定（トークン、ホワイトリスト、デフォルトチャットを設定してから有効化）。フォアグラウンドサービスがロングポーリングを処理します。</string>
-  <string name="assistant_page_local_tools_telegram_notoken_message">トグルはオンですが、まだボットトークンが設定されていません。\n\n簡単な方法：チャットでアシスタントに頼む — &quot;Telegram ボットをセットアップして、私のトークンは … 、私のユーザー ID は … 、私をデフォルトチャットに設定して、有効化して。&quot;\n\n手動の方法：Telegram で @BotFather に /newbot を送ってトークンを取得し、@userinfobot に /start を送って数値ユーザー ID を取得します。その後アシスタントに頼むか、設定 → Telegram ボット に貼り付けてください。</string>
+  <string name="assistant_page_local_tools_telegram_notoken_message">トグルはオンですが、まだボットトークンが設定されていません。\n\n簡単な方法：チャットでアシスタントに頼む — "Telegram ボットをセットアップして、私のトークンは … 、私のユーザー ID は … 、私をデフォルトチャットに設定して、有効化して。"\n\n手動の方法：Telegram で @BotFather に /newbot を送ってトークンを取得し、@userinfobot に /start を送って数値ユーザー ID を取得します。その後アシスタントに頼むか、設定 → Telegram ボット に貼り付けてください。</string>
   <string name="assistant_page_local_tools_telegram_notoken_title">Telegram ボットにはトークンが必要</string>
   <string name="assistant_page_local_tools_telegram_title">Telegram ボット</string>
   <string name="assistant_page_local_tools_telephony_desc">SIM とネットワーク情報（キャリア、ネットワークタイプ）を読み取ります。READ_PHONE_STATE が必要です。</string>
@@ -1279,10 +1278,10 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="local_llm_catalog_tag_speculative">投機的デコード</string>
   <string name="local_llm_catalog_tag_thinking">思考</string>
   <string name="local_llm_catalog_title">推奨モデル</string>
-  <string name="local_llm_crash_recovery_format">復旧しました：ローカルモデルが前回のセッションで %1$s 上でクラッシュしました — 自動的に CPU に切り替えました。タップして閉じる。再試行するには下の &#8220;GPU アクセラレーションを試す&#8221; を切り替えてください。</string>
+  <string name="local_llm_crash_recovery_format">復旧しました：ローカルモデルが前回のセッションで %1$s 上でクラッシュしました — 自動的に CPU に切り替えました。タップして閉じる。再試行するには下の “GPU アクセラレーションを試す” を切り替えてください。</string>
   <string name="local_llm_default_disabled">このデバイスでオープンモデルを実行。約 1.5 GB のダウンロードが必要です（Qwen2.5 1.5B Q8）。</string>
   <string name="local_llm_delete">削除</string>
-  <string name="local_llm_delete_confirm_message">&#8220;%1$s&#8221; をデバイスから削除しますか？これはファイルを削除します（使用するには再度ダウンロードが必要です）。</string>
+  <string name="local_llm_delete_confirm_message">“%1$s” をデバイスから削除しますか？これはファイルを削除します（使用するには再度ダウンロードが必要です）。</string>
   <string name="local_llm_delete_confirm_title">モデルを削除しますか？</string>
   <string name="local_llm_delete_model">モデルを削除</string>
   <string name="local_llm_download_cancel">キャンセル</string>
@@ -1398,7 +1397,7 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="setting_page_accessibility_overlay_open_settings">他のアプリの上に表示を許可</string>
   <string name="setting_page_accessibility_overlay_section">アクティビティオーバーレイ</string>
   <string name="setting_page_accessibility_recent_section">最近の操作</string>
-  <string name="setting_page_accessibility_status_help">RikkaHub は LLM のためにタップ、スワイプ、画面の読み取りを行うためにユーザー補助の権限が必要です。設定 &#x2192; ユーザー補助 &#x2192; インストール済みアプリ &#x2192; RikkaHub を開いてオンにしてください。</string>
+  <string name="setting_page_accessibility_status_help">RikkaHub は LLM のためにタップ、スワイプ、画面の読み取りを行うためにユーザー補助の権限が必要です。設定 → ユーザー補助 → インストール済みアプリ → RikkaHub を開いてオンにしてください。</string>
   <string name="setting_page_accessibility_status_not_running">サービス：未実行</string>
   <string name="setting_page_accessibility_status_running">サービス：実行中</string>
   <string name="setting_page_accessibility_status_section">ステータス</string>
@@ -1453,7 +1452,7 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="setting_page_scheduled_jobs_delete_confirm_yes">削除</string>
   <string name="setting_page_scheduled_jobs_desc">アシスタントがスケジュールした時間ベースのジョブ — 単発および繰り返しの cron 式。</string>
   <string name="setting_page_scheduled_jobs_edit">チャットで編集</string>
-  <string name="setting_page_scheduled_jobs_edit_prefill">&#8220;%1$s&#8221; という名前のスケジュールジョブを編集します。</string>
+  <string name="setting_page_scheduled_jobs_edit_prefill">“%1$s” という名前のスケジュールジョブを編集します。</string>
   <string name="setting_page_scheduled_jobs_empty">まだスケジュールジョブはありません。アシスタントに作成を頼んでください。</string>
   <string name="setting_page_scheduled_jobs_hide_args">引数を隠す</string>
   <string name="setting_page_scheduled_jobs_history_empty">まだ発火の記録はありません。</string>
@@ -1523,7 +1522,7 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="setting_page_workflow_detail_delete_confirm_title">ワークフローを削除しますか？</string>
   <string name="setting_page_workflow_detail_delete_confirm_yes">削除</string>
   <string name="setting_page_workflow_detail_edit">チャットで編集</string>
-  <string name="setting_page_workflow_detail_edit_prefill">&#8220;%1$s&#8221; という名前のワークフローを編集します。</string>
+  <string name="setting_page_workflow_detail_edit_prefill">“%1$s” という名前のワークフローを編集します。</string>
   <string name="setting_page_workflow_detail_history_empty">まだ発火の記録はありません。</string>
   <string name="setting_page_workflow_detail_no_conditions">（なし）</string>
   <string name="setting_page_workflow_detail_run_now">今すぐ実行</string>
@@ -1566,7 +1565,7 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="skill_catalog_installed">インストール済み</string>
   <string name="skill_catalog_installing">インストール中…</string>
   <string name="skill_catalog_title">注目のスキル</string>
-  <string name="skill_detail_name_immutable">スキル名の変更は許可されていません（name フィールドは &#8220;%1$s&#8221; である必要があります）</string>
+  <string name="skill_detail_name_immutable">スキル名の変更は許可されていません（name フィールドは “%1$s” である必要があります）</string>
   <string name="skill_detail_save_failed">保存に失敗しました</string>
   <string name="skill_import_empty_file">ファイルが空です — インポートする内容がありません。</string>
   <string name="skill_import_from_file_label">ファイルからインポート</string>
@@ -1782,4 +1781,6 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="setting_model_page_auto_compaction_mode_tokens">トークン数</string>
   <string name="setting_model_page_auto_compaction_tokens">トークンしきい値</string>
   <string name="setting_model_page_auto_compaction_tokens_desc">千トークン単位でしきい値を入力します。8k は 8,000 トークンを意味します。</string>
+  <string name="setting_model_page_context_compaction_target">圧縮ターゲット</string>
+  <string name="setting_model_page_context_compaction_target_desc">要約の目標サイズを千トークン単位で設定します。空欄の場合は、現在のチャットモデルの最大コンテキストの 10% を使用します。</string>
 </resources>

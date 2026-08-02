@@ -1117,7 +1117,6 @@
   <string name="setting_model_page_fast_model">快速模型</string>
   <string name="setting_model_page_fast_model_desc">用於快速或背景任務的模型，未設置時也作為標題和建議模型的後備。</string>
   <string name="setting_model_page_enable_suggestion">啟用聊天建議</string>
-
   <!-- fork (agent) strings preserved from merge -->
   <string name="setting_display_page_show_date_below_name_desc">是否在暱稱或模型名稱下方顯示訊息日期</string>
   <string name="setting_display_page_show_date_below_name_title">在名稱下方顯示日期</string>
@@ -1209,7 +1208,7 @@
   <string name="assistant_page_local_tools_system_intents_desc">讓助理為你預先填寫系統應用程式，由你最終確認：日曆活動、新增聯絡人、電子郵件編輯器、簡訊編輯器、WiFi 設定、地圖。沒有你在目標應用程式中的點選，不會儲存或傳送任何內容。</string>
   <string name="assistant_page_local_tools_system_intents_title">系統 Intent</string>
   <string name="assistant_page_local_tools_telegram_desc">將助理作為 Telegram 機器人執行 — 收發訊息、檔案，管理 /指令。完全透過工具設定（設定 token、白名單、預設聊天，然後啟用）。前景服務處理長輪詢。</string>
-  <string name="assistant_page_local_tools_telegram_notoken_message">開關已開啟，但尚未設定機器人 Token。\n\n簡單方法：在聊天中讓助理 — &quot;設定 Telegram 機器人，我的 token 是 …，我的使用者 ID 是 …，把我設為預設聊天，並啟用它。&quot;\n\n手動方法：在 Telegram 上向 @BotFather 傳送 /newbot 取得 token，向 @userinfobot 傳送 /start 取得你的數字使用者 ID。然後讓助理設定，或在 設定 → Telegram 機器人 中貼上。</string>
+  <string name="assistant_page_local_tools_telegram_notoken_message">開關已開啟，但尚未設定機器人 Token。\n\n簡單方法：在聊天中讓助理 — "設定 Telegram 機器人，我的 token 是 …，我的使用者 ID 是 …，把我設為預設聊天，並啟用它。"\n\n手動方法：在 Telegram 上向 @BotFather 傳送 /newbot 取得 token，向 @userinfobot 傳送 /start 取得你的數字使用者 ID。然後讓助理設定，或在 設定 → Telegram 機器人 中貼上。</string>
   <string name="assistant_page_local_tools_telegram_notoken_title">Telegram 機器人需要 Token</string>
   <string name="assistant_page_local_tools_telegram_title">Telegram 機器人</string>
   <string name="assistant_page_local_tools_telephony_desc">讀取 SIM 卡和網路資訊（電信業者、網路類型）。需要 READ_PHONE_STATE 權限。</string>
@@ -1277,7 +1276,7 @@
   <string name="local_llm_catalog_tag_speculative">推測解碼</string>
   <string name="local_llm_catalog_tag_thinking">思考</string>
   <string name="local_llm_catalog_title">推薦模型</string>
-  <string name="local_llm_crash_recovery_format">已復原：本機模型上次工作階段在 %1$s 上當機 — 已自動切換到 CPU。點選關閉；切換下方的 &#8220;嘗試 GPU 加速&#8221; 以重試。</string>
+  <string name="local_llm_crash_recovery_format">已復原：本機模型上次工作階段在 %1$s 上當機 — 已自動切換到 CPU。點選關閉；切換下方的 “嘗試 GPU 加速” 以重試。</string>
   <string name="local_llm_default_disabled">在本裝置上執行開源模型。需要下載約 1.5 GB（Qwen2.5 1.5B Q8）。</string>
   <string name="local_llm_delete">刪除</string>
   <string name="local_llm_delete_confirm_message">從你的裝置移除 “%1$s”？這會刪除檔案（你需要重新下載才能使用）。</string>
@@ -1396,7 +1395,7 @@
   <string name="setting_page_accessibility_overlay_open_settings">授予顯示在其他應用程式上層</string>
   <string name="setting_page_accessibility_overlay_section">活動浮動視窗</string>
   <string name="setting_page_accessibility_recent_section">最近操作</string>
-  <string name="setting_page_accessibility_status_help">RikkaHub 需要無障礙權限來為大型語言模型執行點選、滑動和讀取螢幕。開啟 設定 &#x2192; 無障礙 &#x2192; 已安裝的應用程式 &#x2192; RikkaHub 並開啟它。</string>
+  <string name="setting_page_accessibility_status_help">RikkaHub 需要無障礙權限來為大型語言模型執行點選、滑動和讀取螢幕。開啟 設定 → 無障礙 → 已安裝的應用程式 → RikkaHub 並開啟它。</string>
   <string name="setting_page_accessibility_status_not_running">服務：未執行</string>
   <string name="setting_page_accessibility_status_running">服務：執行中</string>
   <string name="setting_page_accessibility_status_section">狀態</string>
@@ -1451,7 +1450,7 @@
   <string name="setting_page_scheduled_jobs_delete_confirm_yes">刪除</string>
   <string name="setting_page_scheduled_jobs_desc">助理安排的基於時間的任務 — 一次性任務和重複的 cron 運算式。</string>
   <string name="setting_page_scheduled_jobs_edit">在聊天中編輯</string>
-  <string name="setting_page_scheduled_jobs_edit_prefill">編輯名為 &#8220;%1$s&#8221; 的排程任務。</string>
+  <string name="setting_page_scheduled_jobs_edit_prefill">編輯名為 “%1$s” 的排程任務。</string>
   <string name="setting_page_scheduled_jobs_empty">暫無排程任務。讓你的助理建立一個。</string>
   <string name="setting_page_scheduled_jobs_hide_args">隱藏參數</string>
   <string name="setting_page_scheduled_jobs_history_empty">尚未記錄任何觸發。</string>
@@ -1521,7 +1520,7 @@
   <string name="setting_page_workflow_detail_delete_confirm_title">刪除工作流程？</string>
   <string name="setting_page_workflow_detail_delete_confirm_yes">刪除</string>
   <string name="setting_page_workflow_detail_edit">在聊天中編輯</string>
-  <string name="setting_page_workflow_detail_edit_prefill">編輯名為 &#8220;%1$s&#8221; 的工作流程。</string>
+  <string name="setting_page_workflow_detail_edit_prefill">編輯名為 “%1$s” 的工作流程。</string>
   <string name="setting_page_workflow_detail_history_empty">尚未記錄任何觸發。</string>
   <string name="setting_page_workflow_detail_no_conditions">（無）</string>
   <string name="setting_page_workflow_detail_run_now">立即執行</string>
@@ -1780,4 +1779,6 @@
   <string name="setting_model_page_auto_compaction_mode_tokens">Token 數量</string>
   <string name="setting_model_page_auto_compaction_tokens">Token 閾值</string>
   <string name="setting_model_page_auto_compaction_tokens_desc">輸入以千個 Token 為單位的閾值。例如，8k 表示 8,000 個 Token。</string>
+  <string name="setting_model_page_context_compaction_target">壓縮目標</string>
+  <string name="setting_model_page_context_compaction_target_desc">以千 Token 為單位設定摘要目標大小。留空時使用目前聊天模型最大上下文的 10%。</string>
 </resources>

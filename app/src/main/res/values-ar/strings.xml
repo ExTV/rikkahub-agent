@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+<?xml version='1.0' encoding='UTF-8'?>
 <resources>
   <string name="about_page_github">Github</string>
   <string name="about_page_license">الترخيص</string>
@@ -1132,7 +1132,7 @@
   <string name="assistant_page_local_tools_termux_postgrant_copy">نسخ الأمر</string>
   <string name="assistant_page_local_tools_termux_postgrant_copied">تم نسخ الأمر — الصقه في Termux.</string>
   <string name="assistant_page_local_tools_telegram_notoken_title">بوت Telegram يحتاج إلى رمز</string>
-  <string name="assistant_page_local_tools_telegram_notoken_message">المفتاح مُفعَّل، لكن لم يُعيَّن رمز بوت بعد.\n\nالطريقة السهلة: اطلب من المساعد في الدردشة — &quot;أعدّ بوت Telegram، رمزي هو …، معرّف المستخدم الخاص بي …، عيّنّي كدردشة افتراضية، فعّله.&quot;\n\nالطريقة اليدوية: راسل @BotFather على Telegram بـ /newbot للحصول على رمز، و@userinfobot بـ /start لمعرّف المستخدم الرقمي الخاص بك. ثم اطلب من المساعد أو الصقهما في الإعدادات → بوت Telegram.</string>
+  <string name="assistant_page_local_tools_telegram_notoken_message">المفتاح مُفعَّل، لكن لم يُعيَّن رمز بوت بعد.\n\nالطريقة السهلة: اطلب من المساعد في الدردشة — "أعدّ بوت Telegram، رمزي هو …، معرّف المستخدم الخاص بي …، عيّنّي كدردشة افتراضية، فعّله."\n\nالطريقة اليدوية: راسل @BotFather على Telegram بـ /newbot للحصول على رمز، و@userinfobot بـ /start لمعرّف المستخدم الرقمي الخاص بك. ثم اطلب من المساعد أو الصقهما في الإعدادات → بوت Telegram.</string>
   <string name="assistant_page_local_tools_cron_jobs_toast_hint">تنبيه: تستخدم المهام المجدوَلة الأدوات التي مكّنتها. إذا استدعت مهمة SSH أو Telegram أو أي أداة أخرى، فيجب أن تكون تلك المفاتيح مُفعَّلة أيضًا.</string>
   <string name="assistant_page_local_tools_dialog_dismiss">فهمت</string>
   <string name="assistant_page_local_tools_termux_verify_no_permission">إذن RUN_COMMAND غير ممنوح. أوقف Termux ثم فعّله لإعادة محاولة مطالبة النظام.</string>
@@ -1155,7 +1155,7 @@
   <string name="setting_page_accessibility_status_section">الحالة</string>
   <string name="setting_page_accessibility_status_running">الخدمة: تعمل</string>
   <string name="setting_page_accessibility_status_not_running">الخدمة: لا تعمل</string>
-  <string name="setting_page_accessibility_status_help">يحتاج RikkaHub إلى إذن إمكانية الوصول لتنفيذ النقرات والسحبات وقراءة الشاشة للنموذج اللغوي. افتح الإعدادات &#x2192; إمكانية الوصول &#x2192; التطبيقات المثبتة &#x2192; RikkaHub وفعّله.</string>
+  <string name="setting_page_accessibility_status_help">يحتاج RikkaHub إلى إذن إمكانية الوصول لتنفيذ النقرات والسحبات وقراءة الشاشة للنموذج اللغوي. افتح الإعدادات → إمكانية الوصول → التطبيقات المثبتة → RikkaHub وفعّله.</string>
   <string name="setting_page_accessibility_open_settings">فتح إعدادات إمكانية الوصول</string>
   <string name="setting_page_accessibility_diagnostics_section">التشخيص</string>
   <string name="setting_page_accessibility_capture_diag">التقاط لقطة شاشة تشخيصية</string>
@@ -1250,7 +1250,7 @@
   <string name="setting_page_workflow_detail_delete_confirm_yes">حذف</string>
   <string name="setting_page_workflow_detail_delete_confirm_no">إلغاء</string>
   <string name="setting_page_workflow_detail_run_now_done">انتهى التشغيل: %1$s</string>
-  <string name="setting_page_workflow_detail_edit_prefill">عدّل سير العمل المُسمّى &#8220;%1$s&#8221;.</string>
+  <string name="setting_page_workflow_detail_edit_prefill">عدّل سير العمل المُسمّى “%1$s”.</string>
   <string name="setting_page_workflow_detail_stat_last_run">آخر تشغيل: %1$s</string>
   <string name="setting_page_workflow_detail_stat_last_run_never">آخر تشغيل: مطلقًا</string>
   <string name="setting_page_workflow_detail_stat_runs_today">اليوم: %1$d تشغيل</string>
@@ -1288,7 +1288,7 @@
   <string name="setting_page_scheduled_jobs_run_now_fired">تم طلب الانطلاق.</string>
   <string name="setting_page_scheduled_jobs_run_now_disabled">المهمة مُوقَفة مؤقتًا — فعّلها أولًا.</string>
   <string name="setting_page_scheduled_jobs_run_now_not_found">لم تُعثر على المهمة.</string>
-  <string name="setting_page_scheduled_jobs_edit_prefill">عدّل المهمة المجدوَلة المُسمّاة &#8220;%1$s&#8221;.</string>
+  <string name="setting_page_scheduled_jobs_edit_prefill">عدّل المهمة المجدوَلة المُسمّاة “%1$s”.</string>
   <string name="setting_page_scheduled_jobs_stat_last_run">آخر تشغيل: %1$s</string>
   <string name="setting_page_scheduled_jobs_stat_last_run_never">آخر تشغيل: مطلقًا</string>
   <string name="setting_page_scheduled_jobs_stat_next_run">التشغيل التالي: %1$s</string>
@@ -1397,7 +1397,7 @@
   <string name="local_llm_max_tokens_desc">تجاوز الافتراضي المُنتقى. ذاكرة KV المؤقتة لملف النموذج هي السقف الصارم — Qwen ekv4096 محدود بـ 4096 بغض النظر. النماذج القادرة (Gemma 4 E2B = 32000) تستفيد من قيمة أكبر. اتركه فارغًا لاستخدام الافتراضي المُنتقى.</string>
   <string name="local_llm_max_tokens_placeholder">الافتراضي المُنتقى</string>
   <string name="local_llm_max_tokens_reset">إعادة تعيين</string>
-  <string name="local_llm_crash_recovery_format">تم التعافي: تعطل النموذج المحلي في الجلسة الماضية على %1$s — تم التبديل إلى CPU تلقائيًا. انقر للتجاهل؛ بدّل &#8220;تجربة تسريع GPU&#8221; أدناه لإعادة المحاولة.</string>
+  <string name="local_llm_crash_recovery_format">تم التعافي: تعطل النموذج المحلي في الجلسة الماضية على %1$s — تم التبديل إلى CPU تلقائيًا. انقر للتجاهل؛ بدّل “تجربة تسريع GPU” أدناه لإعادة المحاولة.</string>
   <string name="local_llm_delete_model">حذف النموذج</string>
   <string name="local_llm_insufficient_memory_format">مطلوب نحو %1$d ميغابايت من الذاكرة الحرة (النموذج %2$d ميغابايت بالإضافة إلى هامش وقت التشغيل) لكن %3$d ميغابايت فقط متاح. أغلق تطبيقات أخرى أو اختر نموذجًا أصغر.</string>
   <string name="local_llm_install_url_label">أو الصق رابط HuggingFace (‎/blob/‎ أو ‎/resolve/‎ كلاهما يعمل)</string>
@@ -1415,7 +1415,7 @@
   <string name="local_llm_rename_save">حفظ</string>
   <string name="local_llm_delete">حذف</string>
   <string name="local_llm_delete_confirm_title">حذف النموذج؟</string>
-  <string name="local_llm_delete_confirm_message">إزالة &#8220;%1$s&#8221; من جهازك؟ يحذف هذا الملف (ستحتاج إلى تنزيله مرة أخرى لاستخدامه).</string>
+  <string name="local_llm_delete_confirm_message">إزالة “%1$s” من جهازك؟ يحذف هذا الملف (ستحتاج إلى تنزيله مرة أخرى لاستخدامه).</string>
   <string name="local_llm_invalid_url">رابط غير صالح: يجب أن يكون https وبصيغة صحيحة</string>
   <string name="local_llm_download_progress">جارٍ التنزيل… %1$d%%</string>
   <string name="local_llm_catalog_title">النماذج المُوصى بها</string>
@@ -1486,7 +1486,7 @@
   <string name="provider_test_tool_call">استدعاء الأدوات</string>
   <string name="provider_test_tool_called">تم الاستدعاء: %1$s  الإدخال: %2$s</string>
   <string name="provider_test_no_tool">لم تُستدعَ أي أداة، الرد: %1$s</string>
-  <string name="skill_detail_name_immutable">تغيير اسم المهارة غير مسموح (يجب أن يكون حقل name هو &#8220;%1$s&#8221;)</string>
+  <string name="skill_detail_name_immutable">تغيير اسم المهارة غير مسموح (يجب أن يكون حقل name هو “%1$s”)</string>
   <string name="skill_detail_save_failed">فشل الحفظ</string>
   <string name="update_download_description">جارٍ تنزيل التحديث…</string>
   <string name="chat_stop_generation_before_delete">من فضلك أوقف التوليد قبل حذف الرسائل</string>
@@ -1498,4 +1498,6 @@
   <string name="setting_model_page_auto_compaction_mode_tokens">عدد الرموز</string>
   <string name="setting_model_page_auto_compaction_tokens">عتبة الرموز</string>
   <string name="setting_model_page_auto_compaction_tokens_desc">أدخل العتبة بآلاف الرموز. على سبيل المثال، 8k تعني 8,000 رمز.</string>
+  <string name="setting_model_page_context_compaction_target">هدف الضغط</string>
+  <string name="setting_model_page_context_compaction_target_desc">اضبط حجم الملخص المستهدف بآلاف الرموز. اتركه فارغًا لاستخدام 10% من الحد الأقصى لسياق نموذج الدردشة الحالي.</string>
 </resources>

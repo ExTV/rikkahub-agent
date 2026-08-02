@@ -198,6 +198,9 @@ private fun AutoCompactionSettingItem(
     var tokenThreshold by remember(settings.autoCompactionThresholdTokensK) {
         mutableStateOf(settings.autoCompactionThresholdTokensK.toString())
     }
+    var compactionTargetTokensK by remember(settings.contextCompactionTargetTokensK) {
+        mutableStateOf(settings.contextCompactionTargetTokensK?.toString().orEmpty())
+    }
 
     CardGroup {
         item(
@@ -308,6 +311,40 @@ private fun AutoCompactionSettingItem(
                 },
             )
         }
+        item(
+            headlineContent = {
+                Text(stringResource(R.string.setting_model_page_context_compaction_target))
+            },
+            supportingContent = {
+                OutlinedTextField(
+                    value = compactionTargetTokensK,
+                    onValueChange = { value ->
+                        compactionTargetTokensK = value.filter(Char::isDigit).take(7)
+                    },
+                    singleLine = true,
+                    suffix = { Text("k") },
+                    supportingText = {
+                        Text(stringResource(R.string.setting_model_page_context_compaction_target_desc))
+                    },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { focusState ->
+                            if (!focusState.isFocused) {
+                                val normalized = compactionTargetTokensK.toIntOrNull()
+                                    ?.coerceIn(1, Int.MAX_VALUE / 1_000)
+                                val normalizedValue = normalized?.toString().orEmpty()
+                                compactionTargetTokensK = normalizedValue
+                                if (normalized != settings.contextCompactionTargetTokensK) {
+                                    vm.updateSettings(
+                                        settings.copy(contextCompactionTargetTokensK = normalized)
+                                    )
+                                }
+                            }
+                        },
+                )
+            },
+        )
     }
 }
 

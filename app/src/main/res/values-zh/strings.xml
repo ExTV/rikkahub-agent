@@ -1147,7 +1147,6 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="setting_model_page_fast_model">快速模型</string>
   <string name="setting_model_page_fast_model_desc">用于快速或后台任务的模型，当未设置时也用作标题和建议模型的后备</string>
   <string name="setting_model_page_enable_suggestion">启用聊天建议</string>
-
   <!-- fork (agent) strings preserved from merge -->
   <string name="setting_display_page_show_date_below_name_desc">是否在昵称或模型名称下方显示消息日期</string>
   <string name="setting_display_page_show_date_below_name_title">显示昵称下方日期</string>
@@ -1239,7 +1238,7 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="assistant_page_local_tools_system_intents_desc">让助手为你预填系统应用，由你最终确认：日历事件、新建联系人、邮件编辑器、短信编辑器、WiFi 设置、地图。没有你在目标应用中的点击，不会保存或发送任何内容。</string>
   <string name="assistant_page_local_tools_system_intents_title">系统 Intent</string>
   <string name="assistant_page_local_tools_telegram_desc">将助手作为 Telegram 机器人运行 — 收发消息、文件，管理 /命令。完全通过工具配置（设置 token、白名单、默认聊天，然后启用）。前台服务处理长轮询。</string>
-  <string name="assistant_page_local_tools_telegram_notoken_message">开关已打开，但尚未设置机器人 Token。\n\n简单方法：在聊天中让助手 — &quot;设置 Telegram 机器人，我的 token 是 …，我的用户 ID 是 …，把我设为默认聊天，并启用它。&quot;\n\n手动方法：在 Telegram 上向 @BotFather 发送 /newbot 获取 token，向 @userinfobot 发送 /start 获取你的数字用户 ID。然后让助手设置，或在 设置 → Telegram 机器人 中粘贴。</string>
+  <string name="assistant_page_local_tools_telegram_notoken_message">开关已打开，但尚未设置机器人 Token。\n\n简单方法：在聊天中让助手 — "设置 Telegram 机器人，我的 token 是 …，我的用户 ID 是 …，把我设为默认聊天，并启用它。"\n\n手动方法：在 Telegram 上向 @BotFather 发送 /newbot 获取 token，向 @userinfobot 发送 /start 获取你的数字用户 ID。然后让助手设置，或在 设置 → Telegram 机器人 中粘贴。</string>
   <string name="assistant_page_local_tools_telegram_notoken_title">Telegram 机器人需要 Token</string>
   <string name="assistant_page_local_tools_telegram_title">Telegram 机器人</string>
   <string name="assistant_page_local_tools_telephony_desc">读取 SIM 卡和网络信息（运营商、网络类型）。需要 READ_PHONE_STATE 权限。</string>
@@ -1307,7 +1306,7 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="local_llm_catalog_tag_speculative">推测解码</string>
   <string name="local_llm_catalog_tag_thinking">思考</string>
   <string name="local_llm_catalog_title">推荐模型</string>
-  <string name="local_llm_crash_recovery_format">已恢复：本地模型上次会话在 %1$s 上崩溃 — 已自动切换到 CPU。点击关闭；切换下方的 &#8220;尝试 GPU 加速&#8221; 以重试。</string>
+  <string name="local_llm_crash_recovery_format">已恢复：本地模型上次会话在 %1$s 上崩溃 — 已自动切换到 CPU。点击关闭；切换下方的 “尝试 GPU 加速” 以重试。</string>
   <string name="local_llm_default_disabled">在本设备上运行开源模型。需要下载约 1.5 GB（Qwen2.5 1.5B Q8）。</string>
   <string name="local_llm_delete">删除</string>
   <string name="local_llm_delete_confirm_message">从你的设备移除 “%1$s”？这会删除文件（你需要重新下载才能使用）。</string>
@@ -1426,7 +1425,7 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="setting_page_accessibility_overlay_open_settings">授予在其他应用上层显示</string>
   <string name="setting_page_accessibility_overlay_section">活动悬浮窗</string>
   <string name="setting_page_accessibility_recent_section">最近操作</string>
-  <string name="setting_page_accessibility_status_help">RikkaHub 需要无障碍权限来为大模型执行点击、滑动和读取屏幕。打开 设置 &#x2192; 无障碍 &#x2192; 已安装的应用 &#x2192; RikkaHub 并开启它。</string>
+  <string name="setting_page_accessibility_status_help">RikkaHub 需要无障碍权限来为大模型执行点击、滑动和读取屏幕。打开 设置 → 无障碍 → 已安装的应用 → RikkaHub 并开启它。</string>
   <string name="setting_page_accessibility_status_not_running">服务：未运行</string>
   <string name="setting_page_accessibility_status_running">服务：运行中</string>
   <string name="setting_page_accessibility_status_section">状态</string>
@@ -1481,7 +1480,7 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="setting_page_scheduled_jobs_delete_confirm_yes">删除</string>
   <string name="setting_page_scheduled_jobs_desc">助手安排的基于时间的任务 — 一次性任务和重复的 cron 表达式。</string>
   <string name="setting_page_scheduled_jobs_edit">在聊天中编辑</string>
-  <string name="setting_page_scheduled_jobs_edit_prefill">编辑名为 &#8220;%1$s&#8221; 的定时任务。</string>
+  <string name="setting_page_scheduled_jobs_edit_prefill">编辑名为 “%1$s” 的定时任务。</string>
   <string name="setting_page_scheduled_jobs_empty">暂无定时任务。让你的助手创建一个。</string>
   <string name="setting_page_scheduled_jobs_hide_args">隐藏参数</string>
   <string name="setting_page_scheduled_jobs_history_empty">尚未记录任何触发。</string>
@@ -1551,7 +1550,7 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="setting_page_workflow_detail_delete_confirm_title">删除工作流？</string>
   <string name="setting_page_workflow_detail_delete_confirm_yes">删除</string>
   <string name="setting_page_workflow_detail_edit">在聊天中编辑</string>
-  <string name="setting_page_workflow_detail_edit_prefill">编辑名为 &#8220;%1$s&#8221; 的工作流。</string>
+  <string name="setting_page_workflow_detail_edit_prefill">编辑名为 “%1$s” 的工作流。</string>
   <string name="setting_page_workflow_detail_history_empty">尚未记录任何触发。</string>
   <string name="setting_page_workflow_detail_no_conditions">（无）</string>
   <string name="setting_page_workflow_detail_run_now">立即运行</string>
@@ -1785,4 +1784,6 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="setting_model_page_auto_compaction_mode_tokens">Token数量</string>
   <string name="setting_model_page_auto_compaction_tokens">Token阈值</string>
   <string name="setting_model_page_auto_compaction_tokens_desc">输入以千Token为单位的阈值。例如，8k表示8000个Token。</string>
+  <string name="setting_model_page_context_compaction_target">压缩目标</string>
+  <string name="setting_model_page_context_compaction_target_desc">以千 Token 为单位设置摘要目标大小。留空时使用当前聊天模型最大上下文的 10%。</string>
 </resources>

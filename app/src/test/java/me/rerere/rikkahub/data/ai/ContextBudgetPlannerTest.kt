@@ -29,6 +29,30 @@ class ContextBudgetPlannerTest {
     }
 
     @Test
+    fun `tool output appended after provider usage is included in the next request estimate`() {
+        val messages = listOf(
+            UIMessage(
+                role = MessageRole.ASSISTANT,
+                parts = listOf(
+                    UIMessagePart.Tool(
+                        toolCallId = "call-1",
+                        toolName = "read_file",
+                        input = "{\"path\":\"notes.txt\"}",
+                        output = listOf(UIMessagePart.Text("x".repeat(3_000))),
+                    ),
+                ),
+                usage = TokenUsage(
+                    promptTokens = 5_000,
+                    completionTokens = 1_000,
+                    totalTokens = 6_000,
+                ),
+            ),
+        )
+
+        assertEquals(7_000, ContextBudgetPlanner.estimateInputTokens(messages))
+    }
+
+    @Test
     fun `plan triggers at configured percentage`() {
         val below = listOf(
             UIMessage(

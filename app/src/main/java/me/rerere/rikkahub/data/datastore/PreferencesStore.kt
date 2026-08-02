@@ -143,6 +143,7 @@ class SettingsStore(
         val AUTO_COMPACTION_THRESHOLD_MODE = stringPreferencesKey("auto_compaction_threshold_mode")
         val AUTO_COMPACTION_THRESHOLD_PERCENT = intPreferencesKey("auto_compaction_threshold_percent")
         val AUTO_COMPACTION_THRESHOLD_TOKENS_K = intPreferencesKey("auto_compaction_threshold_tokens_k")
+        val CONTEXT_COMPACTION_TARGET_TOKENS_K = intPreferencesKey("context_compaction_target_tokens_k")
 
         // 提供商
         val PROVIDERS = stringPreferencesKey("providers")
@@ -243,6 +244,8 @@ class SettingsStore(
                     .coerceIn(5, 95),
                 autoCompactionThresholdTokensK = (preferences[AUTO_COMPACTION_THRESHOLD_TOKENS_K] ?: 8)
                     .coerceIn(1, Int.MAX_VALUE / 1_000),
+                contextCompactionTargetTokensK = preferences[CONTEXT_COMPACTION_TARGET_TOKENS_K]
+                    ?.coerceIn(1, Int.MAX_VALUE / 1_000),
                 assistantId = preferences[SELECT_ASSISTANT]?.let { Uuid.parse(it) }
                     ?: DEFAULT_ASSISTANT_ID,
                 assistantTags = preferences[ASSISTANT_TAGS]?.let {
@@ -516,6 +519,10 @@ class SettingsStore(
                 settings.autoCompactionThresholdPercent.coerceIn(5, 95)
             preferences[AUTO_COMPACTION_THRESHOLD_TOKENS_K] =
                 settings.autoCompactionThresholdTokensK.coerceIn(1, Int.MAX_VALUE / 1_000)
+            settings.contextCompactionTargetTokensK?.let { targetTokensK ->
+                preferences[CONTEXT_COMPACTION_TARGET_TOKENS_K] =
+                    targetTokensK.coerceIn(1, Int.MAX_VALUE / 1_000)
+            } ?: preferences.remove(CONTEXT_COMPACTION_TARGET_TOKENS_K)
 
             preferences[PROVIDERS] = JsonInstant.encodeToString(settings.providers)
             preferences[DELETED_BUILTIN_PROVIDER_IDS] = JsonInstant.encodeToString(
@@ -675,6 +682,11 @@ data class Settings(
     val autoCompactionThresholdMode: AutoCompactionThresholdMode = AutoCompactionThresholdMode.PERCENT,
     val autoCompactionThresholdPercent: Int = 80,
     val autoCompactionThresholdTokensK: Int = 8,
+    /**
+     * Null keeps the dynamic default: 10% of the current chat model's advertised context.
+     * A value is stored in thousands of tokens so the setting remains easy to edit on mobile.
+     */
+    val contextCompactionTargetTokensK: Int? = null,
     val assistantId: Uuid = DEFAULT_ASSISTANT_ID,
     val providers: List<ProviderSetting> = DEFAULT_PROVIDERS,
     /**
@@ -836,6 +848,23 @@ fun List<ProviderSetting>.findModelById(uuid: Uuid): Model? {
 
 fun Settings.getCurrentChatModel(): Model? {
     return findModelById(this.getCurrentAssistant().chatModelId ?: this.chatModelId)
+}
+
+private const val FALLBACK_CONTEXT_COMPACTION_TARGET_TOKENS = 2_000
+
+/** Returns the configured summary target, or 10% of the active chat model's context window. */
+fun Settings.getContextCompactionTargetTokens(contextLength: Int?): Int {
+    val configured = contextCompactionTargetTokensK
+        ?.toLong()
+        ?.coerceAtLeast(1L)
+        ?.times(1_000L)
+    if (configured != null) {
+        return configured.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    }
+    return contextLength
+        ?.takeIf { it > 0 }
+        ?.let { (it / 10).coerceAtLeast(1) }
+        ?: FALLBACK_CONTEXT_COMPACTION_TARGET_TOKENS
 }
 
 fun Settings.getCurrentAssistant(): Assistant {

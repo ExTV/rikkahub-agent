@@ -60,9 +60,12 @@ object ContextBudgetPlanner {
             val usage = messages[usageIndex].usage!!
             val reportedTotal = usage.totalTokens.takeIf { it > 0 }
                 ?: (usage.promptTokens + usage.completionTokens)
-            reportedTotal.toLong() + messages
-                .drop(usageIndex + 1)
-                .sumOf(::estimateMessageTokens)
+            // Tool outputs are attached to the assistant message only after the provider has
+            // reported usage for its tool-call response. They therefore are not represented in
+            // that usage figure, even though the next model request includes them.
+            reportedTotal.toLong() +
+                estimatePostUsageToolOutputTokens(messages[usageIndex]) +
+                messages.drop(usageIndex + 1).sumOf(::estimateMessageTokens)
         } else {
             messages.sumOf(::estimateMessageTokens)
         }
@@ -72,6 +75,20 @@ object ContextBudgetPlanner {
     fun estimateMessageTokens(message: UIMessage): Long {
         val contentTokens = message.parts.sumOf(::estimatePartTokens)
         return MESSAGE_OVERHEAD_TOKENS + contentTokens
+    }
+
+    /**
+     * Estimates only the execution results that were appended after provider usage was emitted.
+     * Tool-call names and arguments already belong to the assistant completion represented by the
+     * reported usage, so counting them here would double-count that response.
+     */
+    @Suppress("DEPRECATION")
+    private fun estimatePostUsageToolOutputTokens(message: UIMessage): Long = message.parts.sumOf { part ->
+        when (part) {
+            is UIMessagePart.Tool -> part.output.sumOf(::estimatePartTokens)
+            is UIMessagePart.ToolResult -> estimateTextTokens(part.content.toString())
+            else -> 0L
+        }
     }
 
     /** Selects a recent tail whose estimated size fits [targetTokens]. */

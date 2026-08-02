@@ -89,6 +89,7 @@ import me.rerere.rikkahub.data.datastore.AutoCompactionThresholdMode
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getAssistantById
+import me.rerere.rikkahub.data.datastore.getContextCompactionTargetTokens
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.files.FilesManager
@@ -947,6 +948,12 @@ class ChatService(
                         val actualPromptTokens = generatedMessages.lastOrNull()?.usage
                             ?.promptTokens
                             ?.takeIf { it > 0 }
+                        // The provider reports usage before tool execution. Estimate only the
+                        // execution result appended afterwards so the threshold reflects the
+                        // next request without turning automatic compaction into a preflight
+                        // estimate of an otherwise unverified conversation.
+                        val nextRequestTokens = ContextBudgetPlanner
+                            .estimateInputTokens(generatedMessages)
                         val triggerTokens = when (settings.autoCompactionThresholdMode) {
                             AutoCompactionThresholdMode.PERCENT -> model.contextLength
                                 ?.takeIf { it > 0 }
@@ -965,14 +972,15 @@ class ChatService(
                         }
                         if (actualPromptTokens == null ||
                             triggerTokens == null ||
-                            actualPromptTokens < triggerTokens
+                            nextRequestTokens < triggerTokens
                         ) {
                             null
                         } else {
                             Log.i(
                                 TAG,
                                 "Actual prompt usage reached compaction threshold after tool execution: " +
-                                    "$actualPromptTokens >= $triggerTokens",
+                                    "$actualPromptTokens reported, $nextRequestTokens including tool results " +
+                                    ">= $triggerTokens",
                             )
                             val compacted = prepareMessagesForGeneration(
                                 conversation = getConversationFlow(conversationId).value,
@@ -1479,23 +1487,11 @@ class ChatService(
         // and compact before the model has had a chance to execute its tools.
         if (!force) return view
 
-        val contextMessages = { current: CompactedMessageView ->
-            current.messages.limitContext(assistant.contextMessageSize)
-        }
-        val knownContextLength = model.contextLength?.takeIf { it > 0 }
-        val contextLength = knownContextLength ?: run {
-            // A provider that omits context_length can still be compacted after it reports an
-            // actual overflow. The estimate is used only to choose a tail for the summary, not
-            // to decide whether compaction should start.
-            ContextBudgetPlanner.estimateInputTokens(contextMessages(view))
-                .coerceAtLeast(1)
-        }
-
         Log.i(
             TAG,
             "Auto compaction starting for ${conversation.id}: " +
                 "provider usage reached the configured threshold or context limit, " +
-                "context=$contextLength",
+                "modelContext=${model.contextLength}",
         )
         processingStatus.value = context.getString(R.string.chat_page_compressing)
         try {
@@ -1514,16 +1510,13 @@ class ChatService(
                     Log.i(TAG, "Auto compaction skipped: no new raw messages after existing summary")
                     view.compaction
                 } else {
-                    val latestContextLength = model.contextLength?.takeIf { it > 0 }
-                        ?: ContextBudgetPlanner.estimateInputTokens(contextMessages(view)).coerceAtLeast(1)
                     createAutomaticCompaction(
                         conversation = latestConversation,
                         currentView = view,
                         settings = settings,
-                        contextLength = latestContextLength,
-                        // Forced compaction happens after a provider-reported threshold/overflow.
-                        // Keep a conservative recent tail without reintroducing a preflight trigger.
-                        triggerTokens = latestContextLength,
+                        targetTokens = settings.getContextCompactionTargetTokens(
+                            model.contextLength,
+                        ),
                     ).also { newlyCreatedAutoCompaction = it }
                 }
             }
@@ -1554,39 +1547,25 @@ class ChatService(
         conversation: Conversation,
         currentView: CompactedMessageView,
         settings: Settings,
-        contextLength: Int,
-        triggerTokens: Int,
+        targetTokens: Int,
     ): ConversationCompaction {
         if (conversation.messageNodes.size < 2) {
             throw IllegalStateException(context.getString(R.string.chat_page_compress_not_enough_messages))
         }
 
-        val summaryOffset = if (currentView.compaction == null) 0 else 1
-        val triggerPercent = (triggerTokens.toLong() * 100L / contextLength.toLong())
-            .coerceIn(0L, 100L)
-            .toInt()
-        val tailBudgetPercent = (triggerPercent - 20).coerceIn(25, 50)
-        val tailBudget = (contextLength.toLong() * tailBudgetPercent / 100L)
-            .coerceIn(512L, Int.MAX_VALUE.toLong())
-            .toInt()
-        val viewTailStart = ContextBudgetPlanner.chooseTailStartIndex(
-            messages = currentView.messages,
-            targetTokens = tailBudget,
-        )
-        val minimumRawTailStart = if (currentView.compaction == null) {
-            1
-        } else {
-            currentView.rawTailStartIndex + 1
-        }
-        val rawTailStartIndex = (
-            currentView.rawTailStartIndex + viewTailStart - summaryOffset
-            ).coerceAtLeast(minimumRawTailStart)
+        // This is called immediately after a tool finishes. Keeping a raw tail here can leave
+        // the just-produced, potentially huge tool output outside the summary and send it back
+        // to the model unchanged. Compress every raw message currently in the request instead.
+        val rawTailStartIndex = conversation.messageNodes.size
 
         // A subsequent compaction may legitimately consume the final raw tail message,
         // leaving the persisted summary as the only request-context prefix. The summary
         // entity uses a null tailStartNodeId to represent this boundary at messageNodes.size.
         if (rawTailStartIndex !in 1..conversation.messageNodes.size) {
             throw IllegalStateException(context.getString(R.string.chat_page_compress_not_enough_messages))
+        }
+        check(rawTailStartIndex > currentView.rawTailStartIndex) {
+            "No new messages available for automatic compaction"
         }
 
         val messagesToCompress = buildList {
@@ -1598,14 +1577,13 @@ class ChatService(
                 )
             )
         }
-        val summaryTargetTokens = (contextLength / 10).coerceIn(500, 2_000)
         return generateAndStoreCompaction(
             conversation = conversation,
             settings = settings,
             messagesToCompress = messagesToCompress,
             rawTailStartIndex = rawTailStartIndex,
             additionalPrompt = "",
-            targetTokens = summaryTargetTokens,
+            targetTokens = targetTokens.coerceAtLeast(1),
             isAuto = true,
         )
     }
