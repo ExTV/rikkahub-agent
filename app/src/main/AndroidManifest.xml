@@ -366,6 +366,16 @@
         android:value="local web server for LLM chat UI" />
     </service>
 
+    <service
+      android:name=".service.ChatGenerationForegroundService"
+      android:exported="false"
+      android:foregroundServiceType="specialUse"
+      android:stopWithTask="false">
+      <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="interactive chat generation and tool execution" />
+    </service>
+
     <provider
       android:name="androidx.core.content.FileProvider"
       android:authorities="${applicationId}.fileprovider"

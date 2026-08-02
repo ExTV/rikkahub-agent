@@ -38,6 +38,45 @@ class ContextCompactionPlannerTest {
     }
 
     @Test
+    fun `large compression contexts use 100k map chunks`() {
+        val modelInputBudget = ContextCompactionPlanner.inputBudgetTokens(
+            contextLength = 400_000,
+            targetTokens = 2_000,
+        )
+
+        assertEquals(100_000, ContextCompactionPlanner.mapInputBudgetTokens(modelInputBudget))
+    }
+
+    @Test
+    fun `large CJK source is split into safe map chunks`() {
+        val source = "文".repeat(400_000)
+
+        val groups = ContextCompactionPlanner.partitionSources(
+            sources = listOf(source),
+            maxInputTokens = 100_000,
+        )
+
+        assertEquals(4, groups.size)
+        assertTrue(groups.all { group ->
+            ContextCompactionPlanner.estimateTokens(group.joinToString("\n\n")) <= 100_000
+        })
+        assertEquals(source, groups.flatten().joinToString(""))
+    }
+
+    @Test
+    fun `source smaller than map budget stays in one request`() {
+        val source = "a".repeat(300_000)
+
+        val groups = ContextCompactionPlanner.partitionSources(
+            sources = listOf(source),
+            maxInputTokens = 100_000,
+        )
+
+        assertEquals(1, groups.size)
+        assertEquals(source, groups.single().single())
+    }
+
+    @Test
     fun `source text retains executed tool input and output`() {
         val message = UIMessage(
             role = MessageRole.ASSISTANT,

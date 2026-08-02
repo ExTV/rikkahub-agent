@@ -221,6 +221,13 @@ class ChatService(
     private fun compactionMutexFor(conversationId: Uuid): Mutex =
         compactionMutexes.getOrPut(conversationId) { Mutex() }
 
+    // This starts before the chat coroutine is dispatched, so a user can background the app
+    // immediately after pressing Send without racing the foreground-service promotion.
+    private val foregroundWorkTracker = ForegroundWorkTracker(
+        onFirstAcquire = { ChatGenerationForegroundService.start(context) },
+        onLastRelease = { ChatGenerationForegroundService.stop(context) },
+    )
+
     /**
      * Hydrate the in-memory session for [conversationId] from disk if it's currently
      * blank. Used by entry points (callback handlers, approval handlers) that may be hit
@@ -431,6 +438,7 @@ class ChatService(
         val previousGenerationWasActive = previousJob?.isActive == true
         previousJob?.cancel()
 
+        val releaseForegroundWork = foregroundWorkTracker.acquire()
         val job = appScope.launch {
             try {
                 runCatching { previousJob?.join() }
@@ -478,6 +486,8 @@ class ChatService(
             } catch (e: Exception) {
                 e.printStackTrace()
                 addError(e, conversationId, title = context.getString(R.string.error_title_send_message))
+            } finally {
+                releaseForegroundWork()
             }
         }
         session.setJob(job)
@@ -616,6 +626,7 @@ class ChatService(
         val session = getOrCreateSession(conversationId)
         session.getJob()?.cancel()
 
+        val releaseForegroundWork = foregroundWorkTracker.acquire()
         val job = appScope.launch {
             try {
                 val conversation = session.state.value
@@ -651,6 +662,8 @@ class ChatService(
                 _generationDoneFlow.emit(conversationId)
             } catch (e: Exception) {
                 addError(e, conversationId, title = context.getString(R.string.error_title_regenerate_message))
+            } finally {
+                releaseForegroundWork()
             }
         }
 
@@ -706,6 +719,7 @@ class ChatService(
             }
         }
 
+        val releaseForegroundWork = foregroundWorkTracker.acquire()
         val job = appScope.launch {
             try {
                 convMutex.withLock {
@@ -788,6 +802,8 @@ class ChatService(
                 _generationDoneFlow.emit(conversationId)
             } catch (e: Exception) {
                 addError(e, conversationId, title = context.getString(R.string.error_title_tool_approval))
+            } finally {
+                releaseForegroundWork()
             }
         }
 
@@ -1574,52 +1590,84 @@ class ChatService(
         additionalPrompt: String,
         targetTokens: Int,
         keepRecentMessages: Int = 32
-    ): Result<Unit> = runCatching {
-        compactionMutexFor(conversationId).withLock {
-            val latestConversation = getConversationFlow(conversationId).value
-                .takeIf { it.messageNodes.isNotEmpty() }
-                ?: conversation
-            val allMessages = latestConversation.currentMessages
-            if (allMessages.isEmpty()) {
-                throw IllegalStateException(
-                    context.getString(R.string.chat_page_compress_not_enough_messages)
-                )
-            }
-
-            val currentView = loadCompactedMessageView(latestConversation)
-            // The retained-message setting is an upper bound. If a short conversation has
-            // fewer nodes than the requested tail but still overflowed because of a huge tool
-            // result, compact every node instead of rejecting the manual operation.
-            val requestedTailStart = if (keepRecentMessages in 1 until allMessages.size) {
-                allMessages.size - keepRecentMessages
-            } else {
-                allMessages.size
-            }
-            // Existing compactions already cover the raw prefix. Advance their boundary only;
-            // regenerating from all raw history is both needlessly expensive and can overflow
-            // the compression model before it gets a chance to summarize anything.
-            val rawTailStartIndex = maxOf(
-                currentView.rawTailStartIndex,
-                requestedTailStart,
-            )
-            val messagesToCompress = buildList {
-                currentView.compaction?.let { add(UIMessage.user(it.summary)) }
-                addAll(
-                    allMessages.subList(
-                        currentView.rawTailStartIndex,
-                        rawTailStartIndex,
+    ): Result<Unit> {
+        val releaseForegroundWork = foregroundWorkTracker.acquire()
+        return runCatching {
+            compactionMutexFor(conversationId).withLock {
+                val latestConversation = getConversationFlow(conversationId).value
+                    .takeIf { it.messageNodes.isNotEmpty() }
+                    ?: conversation
+                val allMessages = latestConversation.currentMessages
+                if (allMessages.isEmpty()) {
+                    throw IllegalStateException(
+                        context.getString(R.string.chat_page_compress_not_enough_messages)
                     )
-                )
-            }
+                }
 
-            generateAndStoreCompaction(
-                conversation = latestConversation,
-                settings = settingsStore.settingsFlow.first(),
-                messagesToCompress = messagesToCompress,
-                rawTailStartIndex = rawTailStartIndex,
-                additionalPrompt = additionalPrompt,
-                targetTokens = targetTokens.coerceAtLeast(1),
-                isAuto = false,
+                val currentView = loadCompactedMessageView(latestConversation)
+                // The retained-message setting is an upper bound. If a short conversation has
+                // fewer nodes than the requested tail but still overflowed because of a huge tool
+                // result, compact every node instead of rejecting the manual operation.
+                val requestedTailStart = if (keepRecentMessages in 1 until allMessages.size) {
+                    allMessages.size - keepRecentMessages
+                } else {
+                    allMessages.size
+                }
+                // Existing compactions already cover the raw prefix. Advance their boundary only;
+                // regenerating from all raw history is both needlessly expensive and can overflow
+                // the compression model before it gets a chance to summarize anything.
+                val rawTailStartIndex = maxOf(
+                    currentView.rawTailStartIndex,
+                    requestedTailStart,
+                )
+                val messagesToCompress = buildList {
+                    currentView.compaction?.let { add(UIMessage.user(it.summary)) }
+                    addAll(
+                        allMessages.subList(
+                            currentView.rawTailStartIndex,
+                            rawTailStartIndex,
+                        )
+                    )
+                }
+
+                generateAndStoreCompaction(
+                    conversation = latestConversation,
+                    settings = settingsStore.settingsFlow.first(),
+                    messagesToCompress = messagesToCompress,
+                    rawTailStartIndex = rawTailStartIndex,
+                    additionalPrompt = additionalPrompt,
+                    targetTokens = targetTokens.coerceAtLeast(1),
+                    isAuto = false,
+                )
+                Unit
+            }
+        }.also {
+            releaseForegroundWork()
+        }
+    }
+
+    /**
+     * Manual compression can outlive the chat screen. Keep it on [AppScope] so removing the
+     * activity from recents does not cancel an in-progress multi-pass compression request.
+     */
+    fun compressConversationAsync(
+        conversationId: Uuid,
+        conversation: Conversation,
+        additionalPrompt: String,
+        targetTokens: Int,
+        keepRecentMessages: Int = 32,
+    ): Job = appScope.launch {
+        compressConversation(
+            conversationId = conversationId,
+            conversation = conversation,
+            additionalPrompt = additionalPrompt,
+            targetTokens = targetTokens,
+            keepRecentMessages = keepRecentMessages,
+        ).onFailure {
+            addError(
+                it,
+                conversationId = conversationId,
+                title = context.getString(R.string.error_title_compress_conversation),
             )
         }
     }
@@ -1656,6 +1704,7 @@ class ChatService(
             contextLength = model.contextLength,
             targetTokens = targetTokens,
         )
+        val mapInputBudgetTokens = ContextCompactionPlanner.mapInputBudgetTokens(inputBudgetTokens)
 
         suspend fun compressSources(
             sources: List<String>,
@@ -1674,7 +1723,9 @@ class ChatService(
             val result = providerHandler.generateText(
                 providerSetting = provider,
                 messages = listOf(UIMessage.user(prompt)),
-                params = backgroundTextGenerationParams(model),
+                params = backgroundTextGenerationParams(model).copy(
+                    maxTokens = requestedTargetTokens,
+                ),
             )
 
             return result.choices.firstOrNull()?.message?.toText()?.trim()
@@ -1682,12 +1733,13 @@ class ChatService(
                 ?: throw IllegalStateException("Failed to generate compressed summary")
         }
 
-        // A map/reduce pass keeps every compression request below the compression model's own
-        // input budget. Sequential requests deliberately avoid a rate-limit burst when a long
-        // conversation becomes dozens of chunks. The final pass always returns one summary.
+        // A map/reduce pass keeps every compression request below both the compression model's
+        // context window and the fixed map-request ceiling. Sequential requests deliberately
+        // avoid a rate-limit burst when a long conversation becomes dozens of chunks. The final
+        // pass always returns one summary.
         var sourceGroups = ContextCompactionPlanner.partitionSources(
             sources = messagesToCompress.map(ContextCompactionPlanner::sourceText),
-            maxInputTokens = inputBudgetTokens,
+            maxInputTokens = mapInputBudgetTokens,
         )
         check(sourceGroups.isNotEmpty()) { "No usable messages selected for compression" }
         var reductionPasses = 0
@@ -1698,7 +1750,7 @@ class ChatService(
             } else {
                 ContextCompactionPlanner.intermediateTargetTokens(
                     finalTargetTokens = targetTokens,
-                    inputBudgetTokens = inputBudgetTokens,
+                    inputBudgetTokens = mapInputBudgetTokens,
                 )
             }
             val summaries = sourceGroups.map { group ->
@@ -1711,7 +1763,7 @@ class ChatService(
 
             sourceGroups = ContextCompactionPlanner.partitionSources(
                 sources = summaries,
-                maxInputTokens = inputBudgetTokens,
+                maxInputTokens = mapInputBudgetTokens,
             )
             reductionPasses++
             check(reductionPasses <= 12) {

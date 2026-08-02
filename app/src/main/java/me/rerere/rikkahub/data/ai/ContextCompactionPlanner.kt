@@ -12,10 +12,15 @@ import me.rerere.ai.ui.UIMessagePart
  * character; the caller can recursively reduce their summaries into one final summary.
  */
 internal object ContextCompactionPlanner {
-    private const val CHARS_PER_TOKEN = 3
     private const val DEFAULT_CONTEXT_LENGTH = 8_192
     private const val PROMPT_OVERHEAD_TOKENS = 768
     private const val MIN_INPUT_BUDGET_TOKENS = 512
+    /**
+     * Keep map requests bounded even when the selected compression model advertises a very large
+     * context window. A 400k-token conversation therefore becomes roughly four independent
+     * 100k-token summaries before the reduce pass, instead of one expensive request.
+     */
+    private const val MAX_MAP_INPUT_TOKENS = 100_000
 
     fun inputBudgetTokens(
         contextLength: Int?,
@@ -33,6 +38,15 @@ internal object ContextCompactionPlanner {
     }
 
     /**
+     * Returns the maximum source size for one map request. A source that already fits this
+     * budget remains a single request; only oversized histories are split.
+     */
+    fun mapInputBudgetTokens(inputBudgetTokens: Int): Int {
+        require(inputBudgetTokens > 0) { "inputBudgetTokens must be positive" }
+        return inputBudgetTokens.coerceAtMost(MAX_MAP_INPUT_TOKENS)
+    }
+
+    /**
      * Splits source text into request-sized groups. A single long message is split at whitespace
      * where possible, rather than allowing it to make one compression request overflow.
      */
@@ -42,15 +56,10 @@ internal object ContextCompactionPlanner {
     ): List<List<String>> {
         require(maxInputTokens > 0) { "maxInputTokens must be positive" }
 
-        val maxChars = maxInputTokens.toLong()
-            .times(CHARS_PER_TOKEN)
-            .coerceAtMost(Int.MAX_VALUE.toLong())
-            .toInt()
-            .coerceAtLeast(1)
         val pieces = sources
             .asSequence()
             .filter { it.isNotBlank() }
-            .flatMap { splitSource(it, maxChars).asSequence() }
+            .flatMap { splitSource(it, maxInputTokens).asSequence() }
             .toList()
         if (pieces.isEmpty()) return emptyList()
 
@@ -94,28 +103,61 @@ internal object ContextCompactionPlanner {
         (inputBudgetTokens / 4).coerceAtLeast(256),
     )
 
-    internal fun estimateTokens(text: String): Int = ((text.length + CHARS_PER_TOKEN - 1) /
-        CHARS_PER_TOKEN).coerceAtLeast(1)
+    /**
+     * A character-count-only estimate badly undercounts Chinese, Japanese, Korean, emoji and
+     * other non-ASCII content. ASCII text is estimated at three chars/token while non-ASCII
+     * chars consume one token each. This intentionally overestimates mixed text to keep every
+     * compression prompt safely below its planned budget.
+     */
+    internal fun estimateTokens(text: String): Int = estimateTokens(text, 0, text.length)
+        .coerceAtLeast(1)
 
-    private fun splitSource(source: String, maxChars: Int): List<String> {
-        if (source.length <= maxChars) return listOf(source)
+    private fun estimateTokens(text: String, startIndex: Int, endIndex: Int): Int {
+        var asciiChars = 0L
+        var nonAsciiChars = 0L
+        for (index in startIndex until endIndex) {
+            if (text[index].code <= 0x7F) asciiChars++ else nonAsciiChars++
+        }
+        return (nonAsciiChars + (asciiChars + 2L) / 3L)
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
+    }
+
+    /**
+     * Splits in one linear scan, so a single giant tool result or article also obeys the token
+     * budget. Prefer a nearby whitespace boundary, but never let an unbroken word bypass it.
+     */
+    private fun splitSource(source: String, maxInputTokens: Int): List<String> {
+        if (estimateTokens(source) <= maxInputTokens) return listOf(source)
 
         val pieces = mutableListOf<String>()
         var start = 0
-        while (start < source.length) {
-            val limit = minOf(start + maxChars, source.length)
-            val boundary = if (limit == source.length) {
-                limit
-            } else {
-                source.lastIndexOfAny(charArrayOf('\n', ' ', '\t'), startIndex = limit - 1)
-                    .takeIf { it > start + maxChars / 2 }
-                    ?: limit
+        var index = start
+        var asciiChars = 0L
+        var nonAsciiChars = 0L
+        var lastWhitespaceEnd = -1
+
+        while (index < source.length) {
+            val char = source[index]
+            if (char.code <= 0x7F) asciiChars++ else nonAsciiChars++
+            val estimatedTokens = nonAsciiChars + (asciiChars + 2L) / 3L
+            if (estimatedTokens <= maxInputTokens) {
+                if (char.isWhitespace()) lastWhitespaceEnd = index + 1
+                index++
+                continue
             }
-            val end = if (boundary == start) limit else boundary
+
+            val end = lastWhitespaceEnd
+                .takeIf { it > start + (index - start) / 2 }
+                ?: index
             pieces += source.substring(start, end)
             start = end
-            while (start < source.length && source[start].isWhitespace()) start++
+            index = start
+            asciiChars = 0L
+            nonAsciiChars = 0L
+            lastWhitespaceEnd = -1
         }
+        if (start < source.length) pieces += source.substring(start)
         return pieces
     }
 
