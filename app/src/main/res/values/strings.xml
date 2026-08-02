@@ -1888,4 +1888,6 @@
   <string name="setting_model_page_auto_compaction_tokens_desc">Enter the threshold in thousands of tokens. For example, 8k means 8,000 tokens.</string>
   <string name="setting_model_page_context_compaction_target">Compression target</string>
   <string name="setting_model_page_context_compaction_target_desc">Set the target summary size in thousands of tokens. Leave blank to use 10% of the maximum context of the current chat model.</string>
+  <string name="setting_model_page_auto_compaction_keep_tool_calls">Keep recent tool calls</string>
+  <string name="setting_model_page_auto_compaction_keep_tool_calls_desc">Automatic compaction keeps their raw input and output. Set 0 to compact the whole active context.</string>
 </resources>

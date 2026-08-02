@@ -94,6 +94,42 @@ internal object ContextCompactionPlanner {
         message.parts.forEach { appendPartForSummary(it) }
     }.trim()
 
+    /**
+     * Selects the raw-message boundary that retains the latest [keepRecentToolCalls] executed
+     * tool calls. A message may contain several calls, so the entire message is retained when it
+     * contains the oldest call in the requested tail. Returning [messages.size] means compact the
+     * whole active context because retaining the requested calls would leave nothing to summarize.
+     */
+    @Suppress("DEPRECATION")
+    fun automaticTailStartIndex(
+        messages: List<UIMessage>,
+        rawTailStartIndex: Int,
+        keepRecentToolCalls: Int,
+    ): Int {
+        require(rawTailStartIndex in 0..messages.size) { "Invalid raw tail start index" }
+        if (keepRecentToolCalls <= 0) return messages.size
+
+        var retainedToolCalls = 0
+        for (index in messages.lastIndex downTo rawTailStartIndex) {
+            retainedToolCalls += messages[index].parts.count { part ->
+                when (part) {
+                    is UIMessagePart.Tool -> !ContextCompactionPresentation.isDisplayTool(part)
+                    is UIMessagePart.ToolCall,
+                    is UIMessagePart.ToolResult
+                        -> true
+                    else -> false
+                }
+            }
+            if (retainedToolCalls >= keepRecentToolCalls) {
+                // The summary source must include at least one raw message. When the requested
+                // tool tail begins at the current source boundary, the safe fallback is a full
+                // compaction of the active summary and raw tail.
+                return index.takeIf { it > rawTailStartIndex } ?: messages.size
+            }
+        }
+        return messages.size
+    }
+
     /** A short intermediate summary prevents a large map phase from inflating the reduce phase. */
     fun intermediateTargetTokens(
         finalTargetTokens: Int,

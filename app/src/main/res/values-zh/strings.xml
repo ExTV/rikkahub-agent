@@ -1786,4 +1786,6 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="setting_model_page_auto_compaction_tokens_desc">输入以千Token为单位的阈值。例如，8k表示8000个Token。</string>
   <string name="setting_model_page_context_compaction_target">压缩目标</string>
   <string name="setting_model_page_context_compaction_target_desc">以千 Token 为单位设置摘要目标大小。留空时使用当前聊天模型最大上下文的 10%。</string>
+  <string name="setting_model_page_auto_compaction_keep_tool_calls">保留最近的工具调用</string>
+  <string name="setting_model_page_auto_compaction_keep_tool_calls_desc">自动压缩会保留这些工具调用的原始输入和输出。设为0时压缩整个当前上下文。</string>
 </resources>

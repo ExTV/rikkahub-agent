@@ -72,6 +72,16 @@ object ContextBudgetPlanner {
         return estimate.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     }
 
+    /**
+     * Estimates the context represented by the supplied messages without using provider usage.
+     * This is required after compaction because reported usage belongs to the pre-compaction
+     * request and cannot describe the synthetic summary that replaced it.
+     */
+    fun estimateContextTokens(messages: List<UIMessage>): Int = messages
+        .sumOf(::estimateMessageTokens)
+        .coerceAtMost(Int.MAX_VALUE.toLong())
+        .toInt()
+
     fun estimateMessageTokens(message: UIMessage): Long {
         val contentTokens = message.parts.sumOf(::estimatePartTokens)
         return MESSAGE_OVERHEAD_TOKENS + contentTokens
@@ -129,6 +139,12 @@ object ContextBudgetPlanner {
             -> MEDIA_PART_TOKENS.toLong()
     }
 
-    private fun estimateTextTokens(text: String): Long =
-        ((text.length + CHARS_PER_TOKEN - 1) / CHARS_PER_TOKEN).toLong()
+    private fun estimateTextTokens(text: String): Long {
+        var asciiChars = 0L
+        var nonAsciiChars = 0L
+        text.forEach { char ->
+            if (char.code <= 0x7F) asciiChars++ else nonAsciiChars++
+        }
+        return nonAsciiChars + (asciiChars + CHARS_PER_TOKEN - 1L) / CHARS_PER_TOKEN
+    }
 }

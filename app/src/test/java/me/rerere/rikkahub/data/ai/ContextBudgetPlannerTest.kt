@@ -53,6 +53,26 @@ class ContextBudgetPlannerTest {
     }
 
     @Test
+    fun `context estimate ignores pre compaction provider usage`() {
+        val messages = listOf(
+            UIMessage(
+                role = MessageRole.ASSISTANT,
+                parts = listOf(UIMessagePart.Text("x".repeat(300))),
+                usage = TokenUsage(promptTokens = 10_000, completionTokens = 100, totalTokens = 10_100),
+            ),
+        )
+
+        assertEquals(108, ContextBudgetPlanner.estimateContextTokens(messages))
+    }
+
+    @Test
+    fun `context estimate conservatively counts CJK tool output`() {
+        val messages = listOf(UIMessage.user("文".repeat(300)))
+
+        assertEquals(308, ContextBudgetPlanner.estimateContextTokens(messages))
+    }
+
+    @Test
     fun `plan triggers at configured percentage`() {
         val below = listOf(
             UIMessage(

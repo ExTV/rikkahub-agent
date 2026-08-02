@@ -1781,4 +1781,6 @@
   <string name="setting_model_page_auto_compaction_tokens_desc">輸入以千個 Token 為單位的閾值。例如，8k 表示 8,000 個 Token。</string>
   <string name="setting_model_page_context_compaction_target">壓縮目標</string>
   <string name="setting_model_page_context_compaction_target_desc">以千 Token 為單位設定摘要目標大小。留空時使用目前聊天模型最大上下文的 10%。</string>
+  <string name="setting_model_page_auto_compaction_keep_tool_calls">保留最近的工具呼叫</string>
+  <string name="setting_model_page_auto_compaction_keep_tool_calls_desc">自動壓縮會保留這些工具呼叫的原始輸入和輸出。設為 0 時壓縮整個目前上下文。</string>
 </resources>

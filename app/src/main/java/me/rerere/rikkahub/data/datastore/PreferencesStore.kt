@@ -143,6 +143,7 @@ class SettingsStore(
         val AUTO_COMPACTION_THRESHOLD_MODE = stringPreferencesKey("auto_compaction_threshold_mode")
         val AUTO_COMPACTION_THRESHOLD_PERCENT = intPreferencesKey("auto_compaction_threshold_percent")
         val AUTO_COMPACTION_THRESHOLD_TOKENS_K = intPreferencesKey("auto_compaction_threshold_tokens_k")
+        val AUTO_COMPACTION_KEEP_RECENT_TOOL_CALLS = intPreferencesKey("auto_compaction_keep_recent_tool_calls")
         val CONTEXT_COMPACTION_TARGET_TOKENS_K = intPreferencesKey("context_compaction_target_tokens_k")
 
         // 提供商
@@ -244,6 +245,8 @@ class SettingsStore(
                     .coerceIn(5, 95),
                 autoCompactionThresholdTokensK = (preferences[AUTO_COMPACTION_THRESHOLD_TOKENS_K] ?: 8)
                     .coerceIn(1, Int.MAX_VALUE / 1_000),
+                autoCompactionKeepRecentToolCalls =
+                    (preferences[AUTO_COMPACTION_KEEP_RECENT_TOOL_CALLS] ?: 5).coerceIn(0, 1_000),
                 contextCompactionTargetTokensK = preferences[CONTEXT_COMPACTION_TARGET_TOKENS_K]
                     ?.coerceIn(1, Int.MAX_VALUE / 1_000),
                 assistantId = preferences[SELECT_ASSISTANT]?.let { Uuid.parse(it) }
@@ -519,6 +522,8 @@ class SettingsStore(
                 settings.autoCompactionThresholdPercent.coerceIn(5, 95)
             preferences[AUTO_COMPACTION_THRESHOLD_TOKENS_K] =
                 settings.autoCompactionThresholdTokensK.coerceIn(1, Int.MAX_VALUE / 1_000)
+            preferences[AUTO_COMPACTION_KEEP_RECENT_TOOL_CALLS] =
+                settings.autoCompactionKeepRecentToolCalls.coerceIn(0, 1_000)
             settings.contextCompactionTargetTokensK?.let { targetTokensK ->
                 preferences[CONTEXT_COMPACTION_TARGET_TOKENS_K] =
                     targetTokensK.coerceIn(1, Int.MAX_VALUE / 1_000)
@@ -682,6 +687,8 @@ data class Settings(
     val autoCompactionThresholdMode: AutoCompactionThresholdMode = AutoCompactionThresholdMode.PERCENT,
     val autoCompactionThresholdPercent: Int = 80,
     val autoCompactionThresholdTokensK: Int = 8,
+    /** Number of most-recent executed tool calls kept raw during the first automatic pass. */
+    val autoCompactionKeepRecentToolCalls: Int = 5,
     /**
      * Null keeps the dynamic default: 10% of the current chat model's advertised context.
      * A value is stored in thousands of tokens so the setting remains easy to edit on mobile.

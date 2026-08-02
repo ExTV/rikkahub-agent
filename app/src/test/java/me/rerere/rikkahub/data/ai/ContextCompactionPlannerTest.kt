@@ -96,4 +96,58 @@ class ContextCompactionPlannerTest {
         assertTrue(source.contains("notes.txt"))
         assertTrue(source.contains("important file content"))
     }
+
+    @Test
+    fun `automatic tail keeps the requested recent tool calls`() {
+        val messages = listOf(
+            UIMessage.user("old context"),
+            toolMessage("first"),
+            toolMessage("second"),
+            UIMessage.user("follow up"),
+            toolMessage("third"),
+        )
+
+        assertEquals(
+            2,
+            ContextCompactionPlanner.automaticTailStartIndex(
+                messages = messages,
+                rawTailStartIndex = 0,
+                keepRecentToolCalls = 2,
+            ),
+        )
+        assertEquals(
+            messages.size,
+            ContextCompactionPlanner.automaticTailStartIndex(
+                messages = messages,
+                rawTailStartIndex = 0,
+                keepRecentToolCalls = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun `automatic tail falls back to full compaction when all raw messages must be retained`() {
+        val messages = listOf(UIMessage.user("old context"), toolMessage("only tool"))
+
+        assertEquals(
+            messages.size,
+            ContextCompactionPlanner.automaticTailStartIndex(
+                messages = messages,
+                rawTailStartIndex = 1,
+                keepRecentToolCalls = 1,
+            ),
+        )
+    }
+
+    private fun toolMessage(name: String) = UIMessage(
+        role = MessageRole.ASSISTANT,
+        parts = listOf(
+            UIMessagePart.Tool(
+                toolCallId = "call-$name",
+                toolName = name,
+                input = "{}",
+                output = listOf(UIMessagePart.Text("result")),
+            ),
+        ),
+    )
 }

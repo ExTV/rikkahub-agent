@@ -1783,4 +1783,6 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="setting_model_page_auto_compaction_tokens_desc">千トークン単位でしきい値を入力します。8k は 8,000 トークンを意味します。</string>
   <string name="setting_model_page_context_compaction_target">圧縮ターゲット</string>
   <string name="setting_model_page_context_compaction_target_desc">要約の目標サイズを千トークン単位で設定します。空欄の場合は、現在のチャットモデルの最大コンテキストの 10% を使用します。</string>
+  <string name="setting_model_page_auto_compaction_keep_tool_calls">最近のツール呼び出しを保持</string>
+  <string name="setting_model_page_auto_compaction_keep_tool_calls_desc">自動圧縮ではこれらのツール呼び出しの入力と出力をそのまま保持します。0 にすると、現在のコンテキスト全体を圧縮します。</string>
 </resources>

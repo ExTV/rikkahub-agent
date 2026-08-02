@@ -201,6 +201,9 @@ private fun AutoCompactionSettingItem(
     var compactionTargetTokensK by remember(settings.contextCompactionTargetTokensK) {
         mutableStateOf(settings.contextCompactionTargetTokensK?.toString().orEmpty())
     }
+    var keepRecentToolCalls by remember(settings.autoCompactionKeepRecentToolCalls) {
+        mutableStateOf(settings.autoCompactionKeepRecentToolCalls.toString())
+    }
 
     CardGroup {
         item(
@@ -308,6 +311,43 @@ private fun AutoCompactionSettingItem(
                             )
                         }
                     }
+                },
+            )
+            item(
+                headlineContent = {
+                    Text(stringResource(R.string.setting_model_page_auto_compaction_keep_tool_calls))
+                },
+                supportingContent = {
+                    OutlinedTextField(
+                        value = keepRecentToolCalls,
+                        onValueChange = { value ->
+                            keepRecentToolCalls = value.filter(Char::isDigit).take(4)
+                        },
+                        singleLine = true,
+                        supportingText = {
+                            Text(
+                                stringResource(
+                                    R.string.setting_model_page_auto_compaction_keep_tool_calls_desc
+                                )
+                            )
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { focusState ->
+                                if (!focusState.isFocused) {
+                                    val normalized = keepRecentToolCalls.toIntOrNull()
+                                        ?.coerceIn(0, 1_000)
+                                        ?: settings.autoCompactionKeepRecentToolCalls
+                                    keepRecentToolCalls = normalized.toString()
+                                    if (normalized != settings.autoCompactionKeepRecentToolCalls) {
+                                        vm.updateSettings(
+                                            settings.copy(autoCompactionKeepRecentToolCalls = normalized)
+                                        )
+                                    }
+                                }
+                            },
+                    )
                 },
             )
         }
