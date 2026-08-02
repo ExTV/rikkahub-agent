@@ -1785,4 +1785,7 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="setting_model_page_context_compaction_target_desc">要約の目標サイズを千トークン単位で設定します。空欄の場合は、現在のチャットモデルの最大コンテキストの 10% を使用します。</string>
   <string name="setting_model_page_auto_compaction_keep_tool_calls">最近のツール呼び出しを保持</string>
   <string name="setting_model_page_auto_compaction_keep_tool_calls_desc">自動圧縮ではこれらのツール呼び出しの入力と出力をそのまま保持します。0 にすると、現在のコンテキスト全体を圧縮します。</string>
+  <string name="setting_model_page_response_stream_retries">Response API ストリームの再試行回数</string>
+  <string name="setting_model_page_response_stream_retries_desc">Response API ストリームが完了前に切断された場合、この回数だけリクエストを自動再試行します。0 にすると自動再試行を無効にします。</string>
+  <string name="setting_model_page_response_stream_retries_input">最大再試行回数</string>
 </resources>

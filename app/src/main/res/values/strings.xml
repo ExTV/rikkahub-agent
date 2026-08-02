@@ -1890,4 +1890,7 @@
   <string name="setting_model_page_context_compaction_target_desc">Set the target summary size in thousands of tokens. Leave blank to use 10% of the maximum context of the current chat model.</string>
   <string name="setting_model_page_auto_compaction_keep_tool_calls">Keep recent tool calls</string>
   <string name="setting_model_page_auto_compaction_keep_tool_calls_desc">Automatic compaction keeps their raw input and output. Set 0 to compact the whole active context.</string>
+  <string name="setting_model_page_response_stream_retries">Response stream retries</string>
+  <string name="setting_model_page_response_stream_retries_desc">When a Response API stream closes before completion, retry the request this many times. Set 0 to disable automatic retries.</string>
+  <string name="setting_model_page_response_stream_retries_input">Maximum retry count</string>
 </resources>

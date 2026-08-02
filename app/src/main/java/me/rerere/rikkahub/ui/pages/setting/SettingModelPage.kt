@@ -184,6 +184,58 @@ private fun ModelSettingsPage(settings: Settings, vm: SettingVM, contentPadding:
         item {
             AutoCompactionSettingItem(settings = settings, vm = vm)
         }
+        item {
+            ResponseStreamRetrySettingItem(settings = settings, vm = vm)
+        }
+    }
+}
+
+@Composable
+private fun ResponseStreamRetrySettingItem(
+    settings: Settings,
+    vm: SettingVM,
+) {
+    var maxRetries by remember(settings.responseStreamMaxRetries) {
+        mutableStateOf(settings.responseStreamMaxRetries.toString())
+    }
+
+    CardGroup {
+        item(
+            headlineContent = {
+                Text(stringResource(R.string.setting_model_page_response_stream_retries))
+            },
+            supportingContent = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.setting_model_page_response_stream_retries_desc))
+                    OutlinedTextField(
+                        value = maxRetries,
+                        onValueChange = { value ->
+                            maxRetries = value.filter(Char::isDigit).take(2)
+                        },
+                        singleLine = true,
+                        label = {
+                            Text(stringResource(R.string.setting_model_page_response_stream_retries_input))
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { focusState ->
+                                if (!focusState.isFocused) {
+                                    val normalized = maxRetries.toIntOrNull()
+                                        ?.coerceIn(0, 10)
+                                        ?: settings.responseStreamMaxRetries
+                                    maxRetries = normalized.toString()
+                                    if (normalized != settings.responseStreamMaxRetries) {
+                                        vm.updateSettings(
+                                            settings.copy(responseStreamMaxRetries = normalized)
+                                        )
+                                    }
+                                }
+                            },
+                    )
+                }
+            },
+        )
     }
 }
 

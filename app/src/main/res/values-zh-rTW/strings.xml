@@ -1783,4 +1783,7 @@
   <string name="setting_model_page_context_compaction_target_desc">以千 Token 為單位設定摘要目標大小。留空時使用目前聊天模型最大上下文的 10%。</string>
   <string name="setting_model_page_auto_compaction_keep_tool_calls">保留最近的工具呼叫</string>
   <string name="setting_model_page_auto_compaction_keep_tool_calls_desc">自動壓縮會保留這些工具呼叫的原始輸入和輸出。設為 0 時壓縮整個目前上下文。</string>
+  <string name="setting_model_page_response_stream_retries">Response API 串流重試次數</string>
+  <string name="setting_model_page_response_stream_retries_desc">Response API 串流在完成前意外關閉時，自動重試請求此次數。設為 0 可停用自動重試。</string>
+  <string name="setting_model_page_response_stream_retries_input">最大重試次數</string>
 </resources>

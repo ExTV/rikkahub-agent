@@ -57,6 +57,11 @@ data class TextGenerationParams(
     val temperature: Float? = null,
     val topP: Float? = null,
     val maxTokens: Int? = null,
+    /**
+     * Number of additional attempts permitted when a streaming response fails before any
+     * meaningful output is received. Providers that cannot safely replay a stream ignore it.
+     */
+    val maxStreamRetries: Int = 0,
     val tools: List<Tool> = emptyList(),
     val reasoningLevel: ReasoningLevel = ReasoningLevel.OFF,
     val customHeaders: List<CustomHeader> = emptyList(),

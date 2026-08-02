@@ -1502,4 +1502,7 @@
   <string name="setting_model_page_context_compaction_target_desc">اضبط حجم الملخص المستهدف بآلاف الرموز. اتركه فارغًا لاستخدام 10% من الحد الأقصى لسياق نموذج الدردشة الحالي.</string>
   <string name="setting_model_page_auto_compaction_keep_tool_calls">الاحتفاظ بأحدث استدعاءات الأدوات</string>
   <string name="setting_model_page_auto_compaction_keep_tool_calls_desc">يحافظ الضغط التلقائي على الإدخال والنتيجة الأصليين لهذه الاستدعاءات. اضبط القيمة على 0 لضغط السياق الحالي بالكامل.</string>
+  <string name="setting_model_page_response_stream_retries">محاولات إعادة تدفق Response API</string>
+  <string name="setting_model_page_response_stream_retries_desc">عند إغلاق تدفق Response API قبل اكتماله، أعد محاولة الطلب بهذا العدد من المرات. اضبطه على 0 لتعطيل إعادة المحاولة التلقائية.</string>
+  <string name="setting_model_page_response_stream_retries_input">الحد الأقصى لعدد المحاولات</string>
 </resources>

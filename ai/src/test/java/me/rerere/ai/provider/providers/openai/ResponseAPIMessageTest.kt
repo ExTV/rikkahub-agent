@@ -19,6 +19,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.io.IOException
 
 /**
  * Unit tests for ResponseAPI message building logic.
@@ -414,6 +415,51 @@ class ResponseAPIMessageTest {
                 requestBody["reasoning"]?.jsonObject?.get("effort")?.jsonPrimitive?.content,
             )
         }
+    }
+
+    @Test
+    fun `response stream retry only replays failures without output`() {
+        assertTrue(
+            shouldRetryResponseStream(
+                failure = ResponseStreamFailureException(
+                    receivedMeaningfulOutput = false,
+                    message = "closed before completion",
+                ),
+                retryAttempt = 0,
+                maxRetries = 2,
+            )
+        )
+        assertTrue(
+            shouldRetryResponseStream(
+                failure = IOException("stream reset"),
+                retryAttempt = 1,
+                maxRetries = 2,
+            )
+        )
+        assertFalse(
+            shouldRetryResponseStream(
+                failure = ResponseStreamFailureException(
+                    receivedMeaningfulOutput = true,
+                    message = "stream reset after text",
+                ),
+                retryAttempt = 0,
+                maxRetries = 2,
+            )
+        )
+        assertFalse(
+            shouldRetryResponseStream(
+                failure = IOException("stream reset"),
+                retryAttempt = 2,
+                maxRetries = 2,
+            )
+        )
+        assertFalse(
+            shouldRetryResponseStream(
+                failure = IllegalStateException("HTTP 401"),
+                retryAttempt = 0,
+                maxRetries = 2,
+            )
+        )
     }
 
     // ==================== Helper Functions ====================

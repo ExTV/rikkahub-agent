@@ -1788,4 +1788,7 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="setting_model_page_context_compaction_target_desc">以千 Token 为单位设置摘要目标大小。留空时使用当前聊天模型最大上下文的 10%。</string>
   <string name="setting_model_page_auto_compaction_keep_tool_calls">保留最近的工具调用</string>
   <string name="setting_model_page_auto_compaction_keep_tool_calls_desc">自动压缩会保留这些工具调用的原始输入和输出。设为0时压缩整个当前上下文。</string>
+  <string name="setting_model_page_response_stream_retries">Response API 流重试次数</string>
+  <string name="setting_model_page_response_stream_retries_desc">Response API 流在完成前意外关闭时，自动重试请求此次数。设为 0 可禁用自动重试。</string>
+  <string name="setting_model_page_response_stream_retries_input">最大重试次数</string>
 </resources>

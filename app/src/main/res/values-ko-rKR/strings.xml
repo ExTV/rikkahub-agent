@@ -1785,4 +1785,7 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네�
   <string name="setting_model_page_context_compaction_target_desc">요약 목표 크기를 천 토큰 단위로 설정합니다. 비워 두면 현재 채팅 모델 최대 컨텍스트의 10%를 사용합니다.</string>
   <string name="setting_model_page_auto_compaction_keep_tool_calls">최근 도구 호출 유지</string>
   <string name="setting_model_page_auto_compaction_keep_tool_calls_desc">자동 압축은 해당 도구 호출의 원본 입력과 출력을 유지합니다. 0으로 설정하면 현재 컨텍스트 전체를 압축합니다.</string>
+  <string name="setting_model_page_response_stream_retries">Response API 스트림 재시도 횟수</string>
+  <string name="setting_model_page_response_stream_retries_desc">Response API 스트림이 완료 전에 끊기면 이 횟수만큼 요청을 자동 재시도합니다. 0으로 설정하면 자동 재시도를 끕니다.</string>
+  <string name="setting_model_page_response_stream_retries_input">최대 재시도 횟수</string>
 </resources>

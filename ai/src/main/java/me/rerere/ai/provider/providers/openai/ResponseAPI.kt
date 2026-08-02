@@ -1,12 +1,14 @@
 package me.rerere.ai.provider.providers.openai
 
 import android.util.Log
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.onFailure
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.retryWhen
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArrayBuilder
 import kotlinx.serialization.json.JsonObject
@@ -60,9 +62,41 @@ import okhttp3.Response
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
+import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Clock
 
 private const val TAG = "ResponseAPI"
+private const val RESPONSE_STREAM_RETRY_INITIAL_DELAY_MS = 500L
+private const val RESPONSE_STREAM_RETRY_MAX_DELAY_MS = 4_000L
+
+/**
+ * A transport failure from a Response API stream. The output marker protects callers from
+ * replaying a request after text or a tool call has already reached the conversation.
+ */
+internal class ResponseStreamFailureException(
+    val receivedMeaningfulOutput: Boolean,
+    message: String,
+    cause: Throwable? = null,
+) : IOException(message, cause)
+
+internal fun shouldRetryResponseStream(
+    failure: Throwable,
+    retryAttempt: Long,
+    maxRetries: Int,
+): Boolean {
+    if (retryAttempt >= maxRetries.coerceAtLeast(0).toLong()) return false
+    if ((failure as? ResponseStreamFailureException)?.receivedMeaningfulOutput == true) {
+        return false
+    }
+    return generateSequence(failure) { it.cause }
+        .take(8)
+        .any { it is IOException }
+}
+
+private fun responseStreamRetryDelayMs(retryAttempt: Long): Long =
+    ((retryAttempt + 1) * RESPONSE_STREAM_RETRY_INITIAL_DELAY_MS)
+        .coerceAtMost(RESPONSE_STREAM_RETRY_MAX_DELAY_MS)
 
 class ResponseAPI(
     private val client: OkHttpClient,
@@ -110,6 +144,30 @@ class ResponseAPI(
         providerSetting: ProviderSetting.OpenAI,
         messages: List<UIMessage>,
         params: TextGenerationParams
+    ): Flow<MessageChunk> = streamAttempt(
+        providerSetting = providerSetting,
+        messages = messages,
+        params = params,
+    ).retryWhen { cause, retryAttempt ->
+        val maxRetries = params.maxStreamRetries.coerceIn(0, 10)
+        if (!shouldRetryResponseStream(cause, retryAttempt, maxRetries)) {
+            return@retryWhen false
+        }
+        val retryNumber = retryAttempt + 1
+        val delayMs = responseStreamRetryDelayMs(retryAttempt)
+        Log.w(
+            TAG,
+            "streamText: retrying Response API stream ($retryNumber/$maxRetries) in ${delayMs}ms after ${cause.javaClass.simpleName}: ${cause.message}",
+            cause,
+        )
+        delay(delayMs)
+        true
+    }
+
+    private fun streamAttempt(
+        providerSetting: ProviderSetting.OpenAI,
+        messages: List<UIMessage>,
+        params: TextGenerationParams,
     ): Flow<MessageChunk> = callbackFlow {
         val requestBody = buildRequestBody(
             providerSetting = providerSetting,
@@ -130,6 +188,10 @@ class ResponseAPI(
 
         Log.i(TAG, "streamText: ${json.encodeToString(requestBody)}")
 
+        val completionReceived = AtomicBoolean(false)
+        val canceledByCollector = AtomicBoolean(false)
+        val receivedMeaningfulOutput = AtomicBoolean(false)
+
         val listener = object : EventSourceListener() {
             override fun onEvent(
                 eventSource: EventSource,
@@ -138,6 +200,7 @@ class ResponseAPI(
                 data: String
             ) {
                 if (data == "[DONE]") {
+                    completionReceived.set(true)
                     close()
                     return
                 }
@@ -145,17 +208,23 @@ class ResponseAPI(
                 val json = json.parseToJsonElement(data).jsonObject
                 val chunk = parseResponseDelta(json)
                 if (chunk != null) {
+                    receivedMeaningfulOutput.set(true)
                     trySend(chunk).onFailure { e ->
                         Log.w(TAG, "onEvent: chunk dropped (${e?.message})")
                     }
                 }
                 if (type == "response.completed") {
+                    completionReceived.set(true)
                     close()
                 }
             }
 
             override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
-                var exception = t
+                if (canceledByCollector.get() || completionReceived.get()) return
+
+                var exception: Throwable = t ?: IOException(
+                    "Response stream failed${response?.code?.let { " (HTTP $it)" }.orEmpty()}"
+                )
 
                 Log.w(TAG, "onFailure: ${t?.javaClass?.name} ${t?.message} / $response", t)
 
@@ -169,13 +238,32 @@ class ResponseAPI(
                     }
                 } catch (e: Throwable) {
                     Log.w(TAG, "onFailure: failed to parse from $bodyRaw", e)
-                } finally {
-                    close(exception)
                 }
+                if (receivedMeaningfulOutput.get()) {
+                    exception = ResponseStreamFailureException(
+                        receivedMeaningfulOutput = true,
+                        message = "Response stream failed after partial output: ${exception.message.orEmpty()}",
+                        cause = exception,
+                    )
+                }
+                close(exception)
             }
 
             override fun onClosed(eventSource: EventSource) {
-                close()
+                if (canceledByCollector.get() || completionReceived.get()) {
+                    close()
+                    return
+                }
+                close(
+                    ResponseStreamFailureException(
+                        receivedMeaningfulOutput = receivedMeaningfulOutput.get(),
+                        message = if (receivedMeaningfulOutput.get()) {
+                            "Response stream closed before completion after partial output"
+                        } else {
+                            "Response stream closed before response.completed or [DONE]"
+                        },
+                    )
+                )
             }
         }
 
@@ -183,7 +271,7 @@ class ResponseAPI(
             .newEventSource(request, listener)
 
         awaitClose {
-            println("[awaitClose] 关闭eventSource ")
+            canceledByCollector.set(true)
             eventSource.cancel()
         }
         // trySend 在缓冲满时会静默丢弃 delta，导致回复中间缺字 (#1295)，因此缓冲必须无界

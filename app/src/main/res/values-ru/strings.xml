@@ -1785,4 +1785,7 @@
   <string name="setting_model_page_context_compaction_target_desc">Укажите целевой размер сводки в тысячах токенов. Оставьте пустым, чтобы использовать 10% максимального контекста модели чата.</string>
   <string name="setting_model_page_auto_compaction_keep_tool_calls">Сохранять последние вызовы инструментов</string>
   <string name="setting_model_page_auto_compaction_keep_tool_calls_desc">Автоматическое сжатие сохраняет исходные входные данные и результаты этих вызовов. Установите 0, чтобы сжать весь текущий контекст.</string>
+  <string name="setting_model_page_response_stream_retries">Повторные попытки потока Response API</string>
+  <string name="setting_model_page_response_stream_retries_desc">Если поток Response API закрывается до завершения, повторить запрос указанное число раз. Установите 0, чтобы отключить автоматические повторы.</string>
+  <string name="setting_model_page_response_stream_retries_input">Максимальное число повторов</string>
 </resources>
