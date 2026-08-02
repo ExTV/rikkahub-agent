@@ -7,9 +7,6 @@ import androidx.core.net.toUri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -64,6 +61,7 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.ContextBudgetPlanner
+import me.rerere.rikkahub.data.ai.ContextCompactionPlanner
 import me.rerere.rikkahub.data.ai.CompactedMessageView
 import me.rerere.rikkahub.data.ai.ContextCompactionView
 import me.rerere.rikkahub.data.ai.mcp.McpManager
@@ -1582,23 +1580,42 @@ class ChatService(
                 .takeIf { it.messageNodes.isNotEmpty() }
                 ?: conversation
             val allMessages = latestConversation.currentMessages
-            val rawTailStartIndex = when {
-                keepRecentMessages > 0 && allMessages.size > keepRecentMessages ->
-                    allMessages.size - keepRecentMessages
-                keepRecentMessages > 0 ->
-                    throw IllegalStateException(
-                        context.getString(R.string.chat_page_compress_not_enough_messages)
-                    )
-                allMessages.isNotEmpty() -> allMessages.size
-                else -> throw IllegalStateException(
+            if (allMessages.isEmpty()) {
+                throw IllegalStateException(
                     context.getString(R.string.chat_page_compress_not_enough_messages)
+                )
+            }
+
+            val currentView = loadCompactedMessageView(latestConversation)
+            // The retained-message setting is an upper bound. If a short conversation has
+            // fewer nodes than the requested tail but still overflowed because of a huge tool
+            // result, compact every node instead of rejecting the manual operation.
+            val requestedTailStart = if (keepRecentMessages in 1 until allMessages.size) {
+                allMessages.size - keepRecentMessages
+            } else {
+                allMessages.size
+            }
+            // Existing compactions already cover the raw prefix. Advance their boundary only;
+            // regenerating from all raw history is both needlessly expensive and can overflow
+            // the compression model before it gets a chance to summarize anything.
+            val rawTailStartIndex = maxOf(
+                currentView.rawTailStartIndex,
+                requestedTailStart,
+            )
+            val messagesToCompress = buildList {
+                currentView.compaction?.let { add(UIMessage.user(it.summary)) }
+                addAll(
+                    allMessages.subList(
+                        currentView.rawTailStartIndex,
+                        rawTailStartIndex,
+                    )
                 )
             }
 
             generateAndStoreCompaction(
                 conversation = latestConversation,
                 settings = settingsStore.settingsFlow.first(),
-                messagesToCompress = allMessages.take(rawTailStartIndex),
+                messagesToCompress = messagesToCompress,
                 rawTailStartIndex = rawTailStartIndex,
                 additionalPrompt = additionalPrompt,
                 targetTokens = targetTokens.coerceAtLeast(1),
@@ -1635,22 +1652,19 @@ class ChatService(
         }
 
         val providerHandler = providerManager.getProviderByType(provider)
+        val inputBudgetTokens = ContextCompactionPlanner.inputBudgetTokens(
+            contextLength = model.contextLength,
+            targetTokens = targetTokens,
+        )
 
-        val maxMessagesPerChunk = 256
-
-        fun splitMessages(messages: List<UIMessage>): List<List<UIMessage>> {
-            if (messages.size <= maxMessagesPerChunk) return listOf(messages)
-            val mid = messages.size / 2
-            val left = splitMessages(messages.subList(0, mid))
-            val right = splitMessages(messages.subList(mid, messages.size))
-            return left + right
-        }
-
-        suspend fun compressMessages(messages: List<UIMessage>): String {
-            val contentToCompress = messages.joinToString("\n\n") { it.summaryAsText(maxLength = 2000) }
+        suspend fun compressSources(
+            sources: List<String>,
+            requestedTargetTokens: Int,
+        ): String {
+            val contentToCompress = sources.joinToString("\n\n")
             val prompt = settings.compressPrompt.applyPlaceholders(
                 "content" to contentToCompress,
-                "target_tokens" to targetTokens.toString(),
+                "target_tokens" to requestedTargetTokens.toString(),
                 "additional_context" to if (additionalPrompt.isNotBlank()) {
                     "Additional instructions from user: $additionalPrompt"
                 } else "",
@@ -1663,14 +1677,46 @@ class ChatService(
                 params = backgroundTextGenerationParams(model),
             )
 
-            return result.choices[0].message?.toText()?.trim()
+            return result.choices.firstOrNull()?.message?.toText()?.trim()
+                ?.takeIf { it.isNotBlank() }
                 ?: throw IllegalStateException("Failed to generate compressed summary")
         }
 
-        val compressedSummaries = coroutineScope {
-            splitMessages(messagesToCompress)
-                .map { chunk -> async { compressMessages(chunk) } }
-                .awaitAll()
+        // A map/reduce pass keeps every compression request below the compression model's own
+        // input budget. Sequential requests deliberately avoid a rate-limit burst when a long
+        // conversation becomes dozens of chunks. The final pass always returns one summary.
+        var sourceGroups = ContextCompactionPlanner.partitionSources(
+            sources = messagesToCompress.map(ContextCompactionPlanner::sourceText),
+            maxInputTokens = inputBudgetTokens,
+        )
+        check(sourceGroups.isNotEmpty()) { "No usable messages selected for compression" }
+        var reductionPasses = 0
+        var finalSummary: String? = null
+        while (finalSummary == null) {
+            val passTargetTokens = if (sourceGroups.size == 1) {
+                targetTokens
+            } else {
+                ContextCompactionPlanner.intermediateTargetTokens(
+                    finalTargetTokens = targetTokens,
+                    inputBudgetTokens = inputBudgetTokens,
+                )
+            }
+            val summaries = sourceGroups.map { group ->
+                compressSources(group, passTargetTokens)
+            }
+            if (summaries.size == 1) {
+                finalSummary = summaries.single()
+                continue
+            }
+
+            sourceGroups = ContextCompactionPlanner.partitionSources(
+                sources = summaries,
+                maxInputTokens = inputBudgetTokens,
+            )
+            reductionPasses++
+            check(reductionPasses <= 12) {
+                "Compression model did not reduce the conversation enough to merge its summaries"
+            }
         }
 
         val expectedBoundary = conversation.messageNodes
@@ -1685,7 +1731,7 @@ class ChatService(
 
         val compaction = ConversationCompaction(
             conversationId = conversation.id,
-            summary = compressedSummaries.joinToString("\n\n").trim(),
+            summary = checkNotNull(finalSummary),
             tailStartNodeId = conversation.messageNodes.getOrNull(rawTailStartIndex)?.id,
             sourceEndNodeId = conversation.messageNodes[rawTailStartIndex - 1].id,
             summaryModelId = model.id,
