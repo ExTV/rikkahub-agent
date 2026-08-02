@@ -9,6 +9,8 @@ data class CompactedMessageView(
     val messages: List<UIMessage>,
     val compaction: ConversationCompaction?,
     val rawTailStartIndex: Int,
+    /** Present only for the request that created a new automatic compaction. */
+    val newlyCreatedAutoCompaction: ConversationCompaction? = null,
 )
 
 object ContextCompactionView {
@@ -33,8 +35,10 @@ object ContextCompactionView {
         }
 
         return CompactedMessageView(
-            messages = listOf(UIMessage.user(compaction.summary)) +
-                conversation.currentMessages.drop(tailStartIndex),
+            messages = ContextCompactionPresentation.stripDisplayTools(
+                listOf(UIMessage.user(compaction.summary)) +
+                    conversation.currentMessages.drop(tailStartIndex),
+            ),
             compaction = compaction,
             rawTailStartIndex = tailStartIndex,
         )
@@ -60,10 +64,14 @@ object ContextCompactionView {
             if (nodeIndex >= 0) {
                 val node = nodes[nodeIndex]
                 val messageIndex = node.messages.indexOfFirst { it.id == message.id }
-                if (node.messages[messageIndex] != message) {
+                val replacement = ContextCompactionPresentation.preserveDisplayTools(
+                    previous = node.messages[messageIndex],
+                    replacement = message,
+                )
+                if (node.messages[messageIndex] != replacement) {
                     nodes[nodeIndex] = node.copy(
                         messages = node.messages.toMutableList().apply {
-                            this[messageIndex] = message
+                            this[messageIndex] = replacement
                         },
                     )
                 }
@@ -76,7 +84,7 @@ object ContextCompactionView {
     }
 
     private fun rawView(conversation: Conversation) = CompactedMessageView(
-        messages = conversation.currentMessages,
+        messages = ContextCompactionPresentation.stripDisplayTools(conversation.currentMessages),
         compaction = null,
         rawTailStartIndex = 0,
     )

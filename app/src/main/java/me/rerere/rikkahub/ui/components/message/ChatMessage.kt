@@ -101,6 +101,7 @@ import kotlin.time.Duration.Companion.milliseconds
 @Composable
 fun ChatMessage(
     node: MessageNode,
+    displayMessage: UIMessage = node.currentMessage,
     modifier: Modifier = Modifier,
     loading: Boolean = false,
     model: Model? = null,
@@ -119,7 +120,8 @@ fun ChatMessage(
     onToolApproval: ((toolCallId: String, approved: Boolean, reason: String, scope: me.rerere.rikkahub.service.ChatService.ApprovalScope, toolName: String) -> Unit)? = null,
     onToolAnswer: ((toolCallId: String, answer: String) -> Unit)? = null,
 ) {
-    val message = node.messages[node.selectIndex]
+    val message = displayMessage
+    val actionMessage = node.currentMessage
     val settings = LocalSettings.current.displaySetting
     val chatFontFamily = LocalChatFontFamily.current ?: rememberChatFontFamily(settings)
     val textStyle = LocalTextStyle.current.copy(
@@ -195,7 +197,7 @@ fun ChatMessage(
                 modifier = Modifier.animateContentSize()
             ) {
                 ChatMessageActionButtons(
-                    message = message,
+                    message = actionMessage,
                     onRegenerate = onRegenerate,
                     node = node,
                     onUpdate = onUpdate,
@@ -220,7 +222,7 @@ fun ChatMessage(
     }
     if (showActionsSheet) {
         ChatMessageActionsSheet(
-            message = message,
+            message = actionMessage,
             onEdit = onEdit,
             onDelete = onDelete,
             onShare = onShare,

@@ -268,7 +268,10 @@ private fun ChatListNormal(
             .flatMap { it.models }
             .associateBy { it.id }
     }
-    val lastMessageIndex = conversation.messageNodes.lastIndex
+    val displayGroups = remember(conversation.messageNodes) {
+        conversation.messageNodes.groupAutomaticCompactionMessages()
+    }
+    val lastMessageNodeId = conversation.messageNodes.lastOrNull()?.id
 
     Box(
         modifier = Modifier
@@ -281,8 +284,11 @@ private fun ChatListNormal(
                     // println("is bottom = ${visibleItemsInfo.isAtBottom()}, scroll = ${state.isScrollInProgress}, can_scroll = ${state.canScrollForward}, loading = $loading")
                     if (!state.isScrollInProgress && loadingState) {
                         if (visibleItemsInfo.isAtBottom()) {
-                            state.requestScrollToItem(conversationUpdated.messageNodes.lastIndex + 10)
-                            // Log.i(TAG, "ChatList: scroll to ${conversationUpdated.messageNodes.lastIndex}")
+                            val latestGroupIndex = conversationUpdated.messageNodes
+                                .groupAutomaticCompactionMessages()
+                                .lastIndex
+                            state.requestScrollToItem(latestGroupIndex + 10)
+                            // Log.i(TAG, "ChatList: scroll to $latestGroupIndex")
                         }
                     }
                 }
@@ -312,18 +318,19 @@ private fun ChatListNormal(
                     .hazeSource(state = hazeState)
                     .padding(top = innerPadding.calculateTopPadding()),
             ) {
-            itemsIndexed(
-                items = conversation.messageNodes,
-                key = { index, item -> item.id },
-            ) { index, node ->
+            items(
+                items = displayGroups,
+                key = { it.id },
+            ) { group ->
+                val node = group.terminalNode
                 Column {
                     ListSelectableItem(
-                        key = node.id,
+                        key = group.id,
                         onSelectChange = {
-                            if (!selectedItems.contains(node.id)) {
-                                selectedItems.add(node.id)
+                            if (group.nodes.any { it.id !in selectedItems }) {
+                                selectedItems.addAll(group.nodes.map { it.id }.filterNot(selectedItems::contains))
                             } else {
-                                selectedItems.remove(node.id)
+                                selectedItems.removeAll(group.nodes.map { it.id }.toSet())
                             }
                         },
                         selectedKeys = selectedItems,
@@ -331,9 +338,10 @@ private fun ChatListNormal(
                     ) {
                         ChatMessage(
                             node = node,
+                            displayMessage = group.displayMessage,
                             model = node.currentMessage.modelId?.let(modelById::get),
                             assistant = assistant,
-                            loading = loading && index == lastMessageIndex,
+                            loading = loading && node.id == lastMessageNodeId,
                             onRegenerate = {
                                 onRegenerate(node.currentMessage)
                             },
@@ -363,7 +371,7 @@ private fun ChatListNormal(
                             onClearTranslation = onClearTranslation,
                             onToolApproval = onToolApproval,
                             onToolAnswer = onToolAnswer,
-                            lastMessage = index == lastMessageIndex,
+                            lastMessage = node.id == lastMessageNodeId,
                         )
                     }
                 }

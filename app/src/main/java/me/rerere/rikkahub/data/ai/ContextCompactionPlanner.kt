@@ -163,6 +163,7 @@ internal object ContextCompactionPlanner {
 
     @Suppress("DEPRECATION")
     private fun StringBuilder.appendPartForSummary(part: UIMessagePart) {
+        if (ContextCompactionPresentation.isDisplayTool(part)) return
         when (part) {
             is UIMessagePart.Text -> appendLine(part.text)
             is UIMessagePart.Reasoning -> appendLine(part.reasoning)
