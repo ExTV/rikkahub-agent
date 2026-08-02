@@ -95,6 +95,87 @@ class ContextCompactionPlannerTest {
         assertTrue(source.contains("read_file"))
         assertTrue(source.contains("notes.txt"))
         assertTrue(source.contains("important file content"))
+        assertTrue(source.contains("must be retained in summary"))
+    }
+
+    @Test
+    fun `source text retains every tool record in one assistant response`() {
+        val message = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(
+                executedTool("tool-b", "input-b", "result-b"),
+                executedTool("tool-c", "input-c", "result-c"),
+                executedTool("tool-d", "input-d", "result-d"),
+            ),
+        )
+
+        val source = ContextCompactionPlanner.sourceText(message)
+
+        listOf("tool-b", "input-b", "result-b", "tool-c", "input-c",
+            "result-c", "tool-d", "input-d", "result-d").forEach { evidence ->
+            assertTrue("Missing tool evidence: $evidence", source.contains(evidence))
+        }
+    }
+
+    @Test
+    fun `required retention instruction demands concrete tool outcomes`() {
+        val instruction = ContextCompactionPlanner.requiredToolRetentionInstructions()
+
+        assertTrue(instruction.contains("tool name"))
+        assertTrue(instruction.contains("factual outcome"))
+        assertTrue(instruction.contains("file paths"))
+    }
+
+    @Test
+    fun `mandatory tool digest retains each completed tool result`() {
+        val messages = listOf(
+            UIMessage.user("Task A"),
+            UIMessage(
+                role = MessageRole.ASSISTANT,
+                parts = listOf(
+                    executedTool("tool-b", "input-b", "result-b"),
+                    executedTool("tool-c", "input-c", "result-c"),
+                    executedTool("tool-d", "input-d", "result-d"),
+                ),
+            ),
+        )
+
+        val digest = ContextCompactionPlanner.mandatoryToolExecutionDigest(
+            messages = messages,
+            maxTokens = 1_000,
+        )
+
+        listOf("tool-b", "result-b", "tool-c", "result-c", "tool-d", "result-d")
+            .forEach { evidence ->
+                assertTrue("Missing digest evidence: $evidence", digest.contains(evidence))
+            }
+    }
+
+    @Test
+    fun `mandatory tool digest carries prior retained tools into subsequent compaction`() {
+        val firstDigest = ContextCompactionPlanner.mandatoryToolExecutionDigest(
+            messages = listOf(
+                UIMessage(
+                    role = MessageRole.ASSISTANT,
+                    parts = listOf(executedTool("tool-b", "input-b", "result-b")),
+                ),
+            ),
+            maxTokens = 1_000,
+        )
+        val secondDigest = ContextCompactionPlanner.mandatoryToolExecutionDigest(
+            messages = listOf(
+                UIMessage.user("[Summary of previous conversation]\n\n$firstDigest"),
+                UIMessage(
+                    role = MessageRole.ASSISTANT,
+                    parts = listOf(executedTool("tool-c", "input-c", "result-c")),
+                ),
+            ),
+            maxTokens = 1_000,
+        )
+
+        listOf("tool-b", "result-b", "tool-c", "result-c").forEach { evidence ->
+            assertTrue("Missing retained tool evidence: $evidence", secondDigest.contains(evidence))
+        }
     }
 
     @Test
@@ -142,12 +223,14 @@ class ContextCompactionPlannerTest {
     private fun toolMessage(name: String) = UIMessage(
         role = MessageRole.ASSISTANT,
         parts = listOf(
-            UIMessagePart.Tool(
-                toolCallId = "call-$name",
-                toolName = name,
-                input = "{}",
-                output = listOf(UIMessagePart.Text("result")),
-            ),
+            executedTool(name, "{}", "result"),
         ),
+    )
+
+    private fun executedTool(name: String, input: String, output: String) = UIMessagePart.Tool(
+        toolCallId = "call-$name",
+        toolName = name,
+        input = input,
+        output = listOf(UIMessagePart.Text(output)),
     )
 }

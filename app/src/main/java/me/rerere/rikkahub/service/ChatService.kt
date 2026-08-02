@@ -1755,20 +1755,38 @@ class ChatService(
             targetTokens = targetTokens,
         )
         val mapInputBudgetTokens = ContextCompactionPlanner.mapInputBudgetTokens(inputBudgetTokens)
+        // Reserve roughly one third of the configured target for a deterministic ledger of
+        // completed tool results. This remains in the request even if the model's prose summary
+        // ignores a tool record.
+        val toolDigest = ContextCompactionPlanner.mandatoryToolExecutionDigest(
+            messages = messagesToCompress,
+            maxTokens = (targetTokens / 3).coerceAtLeast(1),
+        )
+        val modelSummaryTargetTokens = (targetTokens - ContextCompactionPlanner.estimateTokens(toolDigest))
+            .coerceAtLeast(1)
 
         suspend fun compressSources(
             sources: List<String>,
             requestedTargetTokens: Int,
         ): String {
             val contentToCompress = sources.joinToString("\n\n")
-            val prompt = settings.compressPrompt.applyPlaceholders(
-                "content" to contentToCompress,
-                "target_tokens" to requestedTargetTokens.toString(),
-                "additional_context" to if (additionalPrompt.isNotBlank()) {
-                    "Additional instructions from user: $additionalPrompt"
-                } else "",
-                "locale" to Locale.getDefault().displayName
-            )
+            val prompt = buildString {
+                // Put this before the editable prompt and the source material so it remains a
+                // top-level instruction even when a user wrote a minimal custom template.
+                append(ContextCompactionPlanner.requiredToolRetentionInstructions())
+                appendLine()
+                appendLine()
+                append(
+                    settings.compressPrompt.applyPlaceholders(
+                        "content" to contentToCompress,
+                        "target_tokens" to requestedTargetTokens.toString(),
+                        "additional_context" to if (additionalPrompt.isNotBlank()) {
+                            "Additional instructions from user: $additionalPrompt"
+                        } else "",
+                        "locale" to Locale.getDefault().displayName
+                    )
+                )
+            }
 
             val result = providerHandler.generateText(
                 providerSetting = provider,
@@ -1796,10 +1814,10 @@ class ChatService(
         var finalSummary: String? = null
         while (finalSummary == null) {
             val passTargetTokens = if (sourceGroups.size == 1) {
-                targetTokens
+                modelSummaryTargetTokens
             } else {
                 ContextCompactionPlanner.intermediateTargetTokens(
-                    finalTargetTokens = targetTokens,
+                    finalTargetTokens = modelSummaryTargetTokens,
                     inputBudgetTokens = mapInputBudgetTokens,
                 )
             }
@@ -1833,7 +1851,8 @@ class ChatService(
 
         val compaction = ConversationCompaction(
             conversationId = conversation.id,
-            summary = checkNotNull(finalSummary),
+            summary = listOfNotNull(finalSummary, toolDigest.takeIf { it.isNotBlank() })
+                .joinToString("\n\n"),
             tailStartNodeId = conversation.messageNodes.getOrNull(rawTailStartIndex)?.id,
             sourceEndNodeId = conversation.messageNodes[rawTailStartIndex - 1].id,
             summaryModelId = model.id,

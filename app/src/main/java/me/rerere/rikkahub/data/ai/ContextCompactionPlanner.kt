@@ -15,6 +15,14 @@ internal object ContextCompactionPlanner {
     private const val DEFAULT_CONTEXT_LENGTH = 8_192
     private const val PROMPT_OVERHEAD_TOKENS = 768
     private const val MIN_INPUT_BUDGET_TOKENS = 512
+    private const val TOOL_HISTORY_HEADER = "[Tool execution history — authoritative retained context]"
+    private const val TOOL_HISTORY_FOOTER = "[End tool execution history]"
+    private const val TOOL_RECORD_HEADER = "[Retained tool execution record]"
+    private const val TOOL_RECORD_FOOTER = "[End retained tool execution record]"
+    private val retainedToolRecordPattern = Regex(
+        "${Regex.escape(TOOL_RECORD_HEADER)}\\s*(.*?)\\s*${Regex.escape(TOOL_RECORD_FOOTER)}",
+        setOf(RegexOption.DOT_MATCHES_ALL),
+    )
     /**
      * Keep map requests bounded even when the selected compression model advertises a very large
      * context window. A 400k-token conversation therefore becomes roughly four independent
@@ -93,6 +101,52 @@ internal object ContextCompactionPlanner {
         append("]:\n")
         message.parts.forEach { appendPartForSummary(it) }
     }.trim()
+
+    /**
+     * This contract is appended by [ChatService] to every compression request, including when
+     * the user has customized the normal compression prompt. A generic "preserve key facts"
+     * instruction is too weak: models commonly retain the user's request but drop the concrete
+     * result of the tools that actually carried out the work.
+     */
+    fun requiredToolRetentionInstructions(): String = """
+        TOOL EXECUTION RETENTION IS MANDATORY:
+        The conversation can contain [Completed tool execution record] blocks. Preserve every
+        completed tool call in the resulting summary. Include the tool name, the meaningful
+        arguments or target, and the factual outcome. Preserve errors, important returned values,
+        file paths, URLs, IDs, and state changes. Use a clearly labelled "Tool execution history"
+        section when any tool record is present. Do not replace these records with a vague phrase
+        such as "tools were used". If an output is long, condense it faithfully instead of
+        omitting its result.
+    """.trimIndent()
+
+    /**
+     * A compression model may still omit tool results despite an explicit instruction. Keep a
+     * compact, deterministic execution ledger alongside its prose summary so the next model
+     * request always contains the factual result of each completed tool call.
+     */
+    fun mandatoryToolExecutionDigest(
+        messages: List<UIMessage>,
+        maxTokens: Int,
+    ): String {
+        if (maxTokens <= 0) return ""
+        val records = messages.flatMap { message ->
+            extractRetainedToolRecords(message) + message.parts.mapNotNull(::completedToolRecord)
+        }
+        if (records.isEmpty()) return ""
+
+        val header = "$TOOL_HISTORY_HEADER\n"
+        val remainingBudget = (maxTokens - estimateTokens(header)).coerceAtLeast(0)
+        val perRecordBudget = remainingBudget / records.size
+        return buildString {
+            append(header)
+            records.forEach { record ->
+                appendLine(TOOL_RECORD_HEADER)
+                appendLine(truncateToTokenBudget(record, perRecordBudget))
+                appendLine(TOOL_RECORD_FOOTER)
+            }
+            appendLine(TOOL_HISTORY_FOOTER)
+        }.trim()
+    }
 
     /**
      * Selects the raw-message boundary that retains the latest [keepRecentToolCalls] executed
@@ -198,25 +252,102 @@ internal object ContextCompactionPlanner {
     }
 
     @Suppress("DEPRECATION")
+    private fun completedToolRecord(part: UIMessagePart): String? = when (part) {
+        is UIMessagePart.Tool -> {
+            if (ContextCompactionPresentation.isDisplayTool(part) || part.output.isEmpty()) {
+                null
+            } else {
+                buildString {
+                    appendLine("- Tool: ${part.toolName}")
+                    appendLine("  Result:")
+                    part.output.forEach { appendPartForSummary(it) }
+                    appendLine("  Input: ${part.input}")
+                }.trim()
+            }
+        }
+        is UIMessagePart.ToolResult -> buildString {
+            appendLine("- Tool: ${part.toolName}")
+            appendLine("  Result: ${part.content}")
+            appendLine("  Input: ${part.arguments}")
+        }.trim()
+        else -> null
+    }
+
+    private fun truncateToTokenBudget(text: String, maxTokens: Int): String {
+        if (maxTokens <= 0) return "[tool record omitted: summary budget exhausted]"
+        if (estimateTokens(text) <= maxTokens) return text
+
+        var asciiChars = 0L
+        var nonAsciiChars = 0L
+        var end = 0
+        while (end < text.length) {
+            if (text[end].code <= 0x7F) asciiChars++ else nonAsciiChars++
+            val tokens = nonAsciiChars + (asciiChars + 2L) / 3L
+            if (tokens > maxTokens) break
+            end++
+        }
+        return text.substring(0, end).trimEnd() + " …[truncated]"
+    }
+
+    /**
+     * A later compaction receives the previous summary as a plain user message. Re-read the
+     * deterministic ledger from that message so another model summary cannot erase old tool
+     * outcomes during a second or third compaction pass.
+     *
+     * The fallback recognises the ledger format written by builds before record delimiters were
+     * introduced. Those ledgers were appended at the end of the summary, so their remaining text
+     * can safely be split into individual tool records.
+     */
+    private fun extractRetainedToolRecords(message: UIMessage): List<String> = message.parts
+        .filterIsInstance<UIMessagePart.Text>()
+        .flatMap { part ->
+            val delimitedRecords = retainedToolRecordPattern.findAll(part.text)
+                .map { match -> match.groupValues[1].trim() }
+                .filter(String::isNotBlank)
+                .toList()
+            if (delimitedRecords.isNotEmpty()) {
+                delimitedRecords
+            } else {
+                extractLegacyRetainedToolRecords(part.text)
+            }
+        }
+
+    private fun extractLegacyRetainedToolRecords(text: String): List<String> {
+        val historyStart = text.indexOf(TOOL_HISTORY_HEADER)
+        if (historyStart < 0) return emptyList()
+        val historyEnd = text.indexOf(TOOL_HISTORY_FOOTER, startIndex = historyStart)
+            .takeIf { it >= 0 }
+            ?: text.length
+        return text.substring(historyStart + TOOL_HISTORY_HEADER.length, historyEnd)
+            .split(Regex("(?m)(?=^- Tool:)"))
+            .map(String::trim)
+            .filter(String::isNotBlank)
+    }
+
+    @Suppress("DEPRECATION")
     private fun StringBuilder.appendPartForSummary(part: UIMessagePart) {
         if (ContextCompactionPresentation.isDisplayTool(part)) return
         when (part) {
             is UIMessagePart.Text -> appendLine(part.text)
             is UIMessagePart.Reasoning -> appendLine(part.reasoning)
             is UIMessagePart.Tool -> {
-                appendLine("[Tool: ${part.toolName}]")
+                appendLine("[Completed tool execution record — must be retained in summary]")
+                appendLine("Tool: ${part.toolName}")
                 appendLine("Input: ${part.input}")
                 appendLine("Output:")
                 part.output.forEach { output -> appendPartForSummary(output) }
+                appendLine("[End completed tool execution record]")
             }
             is UIMessagePart.ToolCall -> {
-                appendLine("[Tool call: ${part.toolName}]")
+                appendLine("[Tool call requested but no recorded result: ${part.toolName}]")
                 appendLine("Arguments: ${part.arguments}")
             }
             is UIMessagePart.ToolResult -> {
-                appendLine("[Tool result: ${part.toolName}]")
+                appendLine("[Completed tool execution record — must be retained in summary]")
+                appendLine("Tool: ${part.toolName}")
                 appendLine("Arguments: ${part.arguments}")
                 appendLine("Content: ${part.content}")
+                appendLine("[End completed tool execution record]")
             }
             is UIMessagePart.Document -> appendLine("[Document: ${part.fileName}]")
             is UIMessagePart.Image -> appendLine("[Image]")

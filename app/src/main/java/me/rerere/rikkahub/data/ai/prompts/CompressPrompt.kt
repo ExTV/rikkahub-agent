@@ -11,6 +11,9 @@ internal val DEFAULT_COMPRESS_PROMPT = """
     5. Format the summary as context information that can be used to continue the conversation
     6. Use {locale} language
     7. Start the output with a clear indicator that this is a summary (e.g., "[Summary of previous conversation]" or equivalent in the target language)
+    8. Preserve completed tool calls and their outcomes. Include tool names, meaningful arguments,
+       factual results or errors, and important file paths, URLs, IDs, and state changes. Do not
+       replace them with a vague statement that tools were used.
 
     {additional_context}
 
