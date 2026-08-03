@@ -5,6 +5,8 @@ import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.provider.CustomBody
 import me.rerere.ai.provider.CustomHeader
 import me.rerere.ai.provider.Model
+import me.rerere.rikkahub.data.datastore.AutoCompactionThresholdMode
+import me.rerere.rikkahub.data.datastore.Settings
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -25,5 +27,27 @@ class ChatServiceTest {
         assertEquals(ReasoningLevel.OFF, params.reasoningLevel)
         assertEquals(headers, params.customHeaders)
         assertEquals(bodies, params.customBody)
+    }
+
+    @Test
+    fun `token threshold is used as explicit compression context ceiling`() {
+        val model = Model(modelId = "codex-model", contextLength = null)
+        val settings = Settings(
+            autoCompactionThresholdMode = AutoCompactionThresholdMode.TOKENS,
+            autoCompactionThresholdTokensK = 372,
+        )
+
+        assertEquals(372_000, compactionContextLength(settings, model))
+    }
+
+    @Test
+    fun `percent threshold keeps advertised compression context`() {
+        val model = Model(modelId = "model", contextLength = 128_000)
+        val settings = Settings(
+            autoCompactionThresholdMode = AutoCompactionThresholdMode.PERCENT,
+            autoCompactionThresholdTokensK = 372,
+        )
+
+        assertEquals(128_000, compactionContextLength(settings, model))
     }
 }

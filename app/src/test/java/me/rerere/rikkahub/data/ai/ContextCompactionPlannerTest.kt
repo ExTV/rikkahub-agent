@@ -4,6 +4,7 @@ import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -48,6 +49,24 @@ class ContextCompactionPlannerTest {
     }
 
     @Test
+    fun `explicit token ceiling allows one large compression group`() {
+        val modelInputBudget = ContextCompactionPlanner.inputBudgetTokens(
+            contextLength = 372_000,
+            targetTokens = 2_000,
+            allowFullContext = true,
+        )
+
+        assertTrue(modelInputBudget > 250_000)
+        assertEquals(
+            modelInputBudget,
+            ContextCompactionPlanner.mapInputBudgetTokens(
+                modelInputBudget,
+                allowLargeContext = true,
+            ),
+        )
+    }
+
+    @Test
     fun `large CJK source is split into safe map chunks`() {
         val source = "文".repeat(400_000)
 
@@ -74,6 +93,26 @@ class ContextCompactionPlannerTest {
 
         assertEquals(1, groups.size)
         assertEquals(source, groups.single().single())
+    }
+
+    @Test
+    fun `map output target is distributed across groups and capped per request`() {
+        assertEquals(
+            15_000,
+            ContextCompactionPlanner.mapOutputTargetTokens(
+                finalTargetTokens = 30_000,
+                groupCount = 2,
+                maxPerRequestTokens = 16_384,
+            ),
+        )
+        assertEquals(
+            16_384,
+            ContextCompactionPlanner.mapOutputTargetTokens(
+                finalTargetTokens = 100_000,
+                groupCount = 2,
+                maxPerRequestTokens = 16_384,
+            ),
+        )
     }
 
     @Test
@@ -115,6 +154,23 @@ class ContextCompactionPlannerTest {
             "result-c", "tool-d", "input-d", "result-d").forEach { evidence ->
             assertTrue("Missing tool evidence: $evidence", source.contains(evidence))
         }
+    }
+
+    @Test
+    fun `map source bounds huge tool output while retaining tool identity`() {
+        val output = "HEAD-" + "x".repeat(8_000) + "-TAIL"
+        val source = ContextCompactionPlanner.mapSourceText(
+            UIMessage(
+                role = MessageRole.ASSISTANT,
+                parts = listOf(executedTool("large-tool", "{\"id\":1}", output)),
+            )
+        )
+
+        assertTrue(source.contains("large-tool"))
+        assertTrue(source.contains("HEAD-"))
+        assertTrue(source.contains("-TAIL"))
+        assertTrue(source.contains("preview truncated for map request"))
+        assertTrue(source.length < 2_000)
     }
 
     @Test
@@ -175,6 +231,84 @@ class ContextCompactionPlannerTest {
 
         listOf("tool-b", "result-b", "tool-c", "result-c").forEach { evidence ->
             assertTrue("Missing retained tool evidence: $evidence", secondDigest.contains(evidence))
+        }
+    }
+
+    @Test
+    fun `raw retention report exposes all 55 completed calls kept after summary`() {
+        val rawTail = listOf(
+            UIMessage(
+                role = MessageRole.ASSISTANT,
+                parts = (1..55).map { index ->
+                    executedTool("tool-$index", "input-$index", "result-$index")
+                },
+            )
+        )
+
+        val report = ContextCompactionPlanner.rawContextRetentionReport(rawTail)
+
+        assertTrue(report.contains("completed_tool_calls=55"))
+        assertTrue(report.contains("were not deleted or replaced"))
+        assertEquals(55, ContextCompactionPlanner.retainedRawToolCallCount(report))
+    }
+
+    @Test
+    fun `raw retention count only reads a delimited current report`() {
+        val summary = """
+            The model guessed completed_tool_calls=999 outside the report.
+            [Raw context retained verbatim after this summary]
+            raw_messages=1
+            completed_tool_calls=55
+            [End raw context retention report]
+        """.trimIndent()
+
+        assertEquals(55, ContextCompactionPlanner.retainedRawToolCallCount(summary))
+        assertEquals(
+            0,
+            ContextCompactionPlanner.retainedRawToolCallCount("completed_tool_calls=999"),
+        )
+    }
+
+    @Test
+    fun `a later compaction source drops the previous raw-boundary report`() {
+        val previousSummary = UIMessage.user(
+            """
+                Research facts that remain relevant.
+
+                [Raw context retained verbatim after this summary]
+                raw_messages=1
+                completed_tool_calls=55
+                These messages follow this summary in the active model context.
+                [End raw context retention report]
+            """.trimIndent()
+        )
+
+        val source = ContextCompactionPlanner.sourceText(previousSummary)
+
+        assertTrue(source.contains("Research facts that remain relevant."))
+        assertFalse(source.contains("completed_tool_calls=55"))
+        assertFalse(source.contains("Raw context retained verbatim"))
+    }
+
+    @Test
+    fun `55-call digest preserves every call identity and result`() {
+        val messages = listOf(
+            UIMessage(
+                role = MessageRole.ASSISTANT,
+                parts = (1..55).map { index ->
+                    executedTool("tool-$index", "input-$index", "result-$index")
+                },
+            )
+        )
+
+        val digest = ContextCompactionPlanner.mandatoryToolExecutionDigest(
+            messages = messages,
+            maxTokens = 12_000,
+        )
+
+        (1..55).forEach { index ->
+            assertTrue("Missing call id $index", digest.contains("call-tool-$index"))
+            assertTrue("Missing result $index", digest.contains("result-$index"))
         }
     }
 

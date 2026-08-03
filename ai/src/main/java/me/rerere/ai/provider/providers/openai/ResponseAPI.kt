@@ -1,14 +1,13 @@
 package me.rerere.ai.provider.providers.openai
 
 import android.util.Log
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.onFailure
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.retryWhen
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArrayBuilder
 import kotlinx.serialization.json.JsonObject
@@ -67,8 +66,22 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Clock
 
 private const val TAG = "ResponseAPI"
-private const val RESPONSE_STREAM_RETRY_INITIAL_DELAY_MS = 500L
-private const val RESPONSE_STREAM_RETRY_MAX_DELAY_MS = 4_000L
+private val USER_CANCELLATION_MARKERS = listOf(
+    "canceled by user",
+    "cancelled by user",
+    "user_canceled",
+    "user_cancelled",
+)
+
+private fun isCancellationFailure(failure: Throwable): Boolean =
+    generateSequence(failure) { it.cause }
+        .take(8)
+        .any { cause ->
+            cause is CancellationException ||
+                USER_CANCELLATION_MARKERS.any { marker ->
+                    cause.message?.contains(marker, ignoreCase = true) == true
+                }
+        }
 
 /**
  * A transport failure from a Response API stream. The output marker protects callers from
@@ -80,23 +93,79 @@ internal class ResponseStreamFailureException(
     cause: Throwable? = null,
 ) : IOException(message, cause)
 
+/**
+ * A provider-side Response API error delivered as an SSE event. These errors are already a
+ * complete business response, so replaying the exact same request is both noisy and harmful
+ * (a context-length error, for example, can never succeed without changing the input).
+ */
+class ResponseStreamErrorException(
+    val code: String?,
+    message: String,
+    cause: Throwable? = null,
+) : IOException(message, cause)
+
+private fun JsonObject.responseErrorObject(): JsonObject? =
+    this["error"]?.jsonObject
+        ?: this["response"]?.jsonObject?.get("error")?.jsonObject
+
+private fun JsonObject.responseErrorText(name: String): String? = runCatching {
+    this[name]?.jsonPrimitive?.contentOrNull
+        ?: this["response"]?.jsonObject?.get(name)?.jsonPrimitive?.contentOrNull
+        ?: this.responseErrorObject()?.get(name)?.jsonPrimitive?.contentOrNull
+}.getOrNull()?.takeIf { it.isNotBlank() }
+
+/** Convert `error`/`response.failed` SSE payloads into a useful, non-retryable exception. */
+internal fun parseResponseStreamError(
+    payload: JsonObject,
+    eventType: String?,
+): ResponseStreamErrorException {
+    val code = payload.responseErrorText("code")
+    val message = runCatching {
+        val error = payload["error"] ?: payload["response"]?.jsonObject?.get("error")
+        error?.parseErrorDetail()?.message
+    }.getOrNull()?.takeIf { it.isNotBlank() }
+        ?: payload.responseErrorText("message")
+        ?: code
+        ?: "unknown provider error"
+    val eventLabel = eventType?.takeIf { it.isNotBlank() } ?: "error"
+    val detail = buildString {
+        append("Response API $eventLabel")
+        if (code != null && !message.contains(code, ignoreCase = true)) {
+            append(" [$code]")
+        }
+        append(": ")
+        append(message)
+    }
+    return ResponseStreamErrorException(code = code, message = detail)
+}
+
 internal fun shouldRetryResponseStream(
     failure: Throwable,
     retryAttempt: Long,
     maxRetries: Int,
 ): Boolean {
     if (retryAttempt >= maxRetries.coerceAtLeast(0).toLong()) return false
+    if (failure is ResponseStreamErrorException) return false
+    // Some gateways return the context error as a non-2xx response body instead of an SSE
+    // event. Preserve the error for ChatService's compaction path and never replay it blindly.
+    if (generateSequence(failure) { it.cause }.take(8).any { cause ->
+            val text = (cause.message.orEmpty() + " " + cause.toString())
+                .lowercase()
+                .replace('_', ' ')
+            "context length exceeded" in text ||
+                "context_length_exceeded" in text ||
+                "maximum context length" in text
+        }) {
+        return false
+    }
     if ((failure as? ResponseStreamFailureException)?.receivedMeaningfulOutput == true) {
         return false
     }
-    return generateSequence(failure) { it.cause }
-        .take(8)
-        .any { it is IOException }
+    // Response API can surface HTTP, decoding, callback, and other provider failures using
+    // different exception types. Retry every failure except cancellation requested by the user
+    // (or cancellation propagated from the parent coroutine).
+    return !isCancellationFailure(failure)
 }
-
-private fun responseStreamRetryDelayMs(retryAttempt: Long): Long =
-    ((retryAttempt + 1) * RESPONSE_STREAM_RETRY_INITIAL_DELAY_MS)
-        .coerceAtMost(RESPONSE_STREAM_RETRY_MAX_DELAY_MS)
 
 class ResponseAPI(
     private val client: OkHttpClient,
@@ -148,21 +217,7 @@ class ResponseAPI(
         providerSetting = providerSetting,
         messages = messages,
         params = params,
-    ).retryWhen { cause, retryAttempt ->
-        val maxRetries = params.maxStreamRetries.coerceIn(0, 10)
-        if (!shouldRetryResponseStream(cause, retryAttempt, maxRetries)) {
-            return@retryWhen false
-        }
-        val retryNumber = retryAttempt + 1
-        val delayMs = responseStreamRetryDelayMs(retryAttempt)
-        Log.w(
-            TAG,
-            "streamText: retrying Response API stream ($retryNumber/$maxRetries) in ${delayMs}ms after ${cause.javaClass.simpleName}: ${cause.message}",
-            cause,
-        )
-        delay(delayMs)
-        true
-    }
+    )
 
     private fun streamAttempt(
         providerSetting: ProviderSetting.OpenAI,
@@ -199,13 +254,29 @@ class ResponseAPI(
                 type: String?,
                 data: String
             ) {
-                if (data == "[DONE]") {
+                if (data.trim() == "[DONE]") {
                     completionReceived.set(true)
                     close()
                     return
                 }
                 Log.d(TAG, "onEvent: $id/$type $data")
-                val json = json.parseToJsonElement(data).jsonObject
+                val json = runCatching {
+                    json.parseToJsonElement(data).jsonObject
+                }.getOrElse { error ->
+                    close(
+                        ResponseStreamFailureException(
+                            receivedMeaningfulOutput = receivedMeaningfulOutput.get(),
+                            message = "Response stream contained invalid JSON: ${error.message.orEmpty()}",
+                            cause = error,
+                        )
+                    )
+                    return
+                }
+                val eventType = json["type"]?.jsonPrimitive?.contentOrNull ?: type
+                if (eventType == "error" || eventType == "response.failed") {
+                    close(parseResponseStreamError(json, eventType))
+                    return
+                }
                 val chunk = parseResponseDelta(json)
                 if (chunk != null) {
                     receivedMeaningfulOutput.set(true)
@@ -233,7 +304,13 @@ class ResponseAPI(
                     if (!bodyRaw.isNullOrBlank()) {
                         val bodyElement = Json.parseToJsonElement(bodyRaw)
                         Log.d(TAG, "onFailure: error body $bodyElement")
-                        exception = bodyElement.parseErrorDetail()
+                        val detail = bodyElement.parseErrorDetail()
+                        val code = (bodyElement as? JsonObject)?.responseErrorText("code")
+                        exception = if (code != null && !detail.message.orEmpty().contains(code, ignoreCase = true)) {
+                            IOException("$code: ${detail.message.orEmpty()}", detail)
+                        } else {
+                            detail
+                        }
                         Log.i(TAG, "onFailure: $exception")
                     }
                 } catch (e: Throwable) {
@@ -260,7 +337,7 @@ class ResponseAPI(
                         message = if (receivedMeaningfulOutput.get()) {
                             "Response stream closed before completion after partial output"
                         } else {
-                            "Response stream closed before response.completed or [DONE]"
+                            "Response stream closed unexpectedly before response.completed or [DONE]"
                         },
                     )
                 )

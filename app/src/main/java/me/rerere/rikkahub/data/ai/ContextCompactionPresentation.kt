@@ -29,6 +29,10 @@ internal object ContextCompactionPresentation {
             put("mode", JsonPrimitive("automatic"))
             put("source_token_estimate", JsonPrimitive(compaction.sourceTokenEstimate))
             put("summary_model_id", JsonPrimitive(compaction.summaryModelId.toString()))
+            put(
+                "retained_raw_tool_calls",
+                JsonPrimitive(ContextCompactionPlanner.retainedRawToolCallCount(compaction.summary)),
+            )
         }.toString(),
         output = listOf(UIMessagePart.Text(compaction.summary)),
         metadata = buildJsonObject {
@@ -79,8 +83,30 @@ internal object ContextCompactionPresentation {
      * card while copying their latest raw message snapshot back into the conversation.
      */
     fun preserveDisplayTools(previous: UIMessage, replacement: UIMessage): UIMessage {
-        val displayTools = previous.parts.filter(::isDisplayTool)
-        if (displayTools.isEmpty()) return replacement
-        return replacement.copy(parts = replacement.parts + displayTools)
+        /**
+         * [replacement] is the request-side streaming snapshot, so it intentionally omits
+         * display-only tools. Do not append the cards to its tail: the model can append more
+         * reasoning/tool parts to the same assistant message after compaction, which would make
+         * the compaction card move to the bottom on every stream update. Record each card's
+         * position among the real parts and restore it at that boundary instead.
+         */
+        val displayEntries = previous.parts.mapIndexedNotNull { index, part ->
+            if (!isDisplayTool(part)) return@mapIndexedNotNull null
+            index to previous.parts.take(index).count { !isDisplayTool(it) }
+        }
+        if (displayEntries.isEmpty()) return replacement
+
+        val replacementParts = replacement.parts.filterNot(::isDisplayTool)
+        val cardsByRawIndex = displayEntries
+            .groupBy { (_, rawIndex) -> rawIndex.coerceAtMost(replacementParts.size) }
+            .mapValues { (_, entries) -> entries.map { (index, _) -> previous.parts[index] } }
+        val restoredParts = buildList {
+            replacementParts.forEachIndexed { rawIndex, part ->
+                cardsByRawIndex[rawIndex]?.let(::addAll)
+                add(part)
+            }
+            cardsByRawIndex[replacementParts.size]?.let(::addAll)
+        }
+        return replacement.copy(parts = restoredParts)
     }
 }

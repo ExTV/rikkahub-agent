@@ -32,6 +32,7 @@ class ChatGenerationForegroundService : Service() {
         // delayed stale stop a no-op instead of tearing down the foreground service for the
         // newer generation.
         if (!shouldRun.get()) {
+            readiness.markUnavailable()
             stopForeground(STOP_FOREGROUND_REMOVE)
             releaseWakeLock()
             stopSelfResult(startId)
@@ -39,28 +40,45 @@ class ChatGenerationForegroundService : Service() {
         }
 
         if (!startForegroundCompat()) {
+            readiness.markUnavailable()
             stopSelf(startId)
             return START_NOT_STICKY
         }
         acquireWakeLock()
-        return START_NOT_STICKY
+        // Do not let ChatService open the streaming socket until both startForeground() and the
+        // partial wake lock are active. Merely calling startForegroundService() does not provide
+        // that ordering guarantee when the user presses Home immediately after Send.
+        readiness.markReady()
+        // An OEM may reclaim the service while the process remains alive. Sticky restart lets it
+        // reacquire the foreground notification and wake lock while work is still requested.
+        return START_STICKY
     }
 
     override fun onDestroy() {
+        if (shouldRun.get()) readiness.markUnavailable()
         releaseWakeLock()
         super.onDestroy()
     }
 
     private fun startForegroundCompat(): Boolean = try {
-        val notification = NotificationCompat.Builder(this, CHAT_LIVE_UPDATE_NOTIFICATION_CHANNEL_ID)
+        val notificationBuilder = NotificationCompat.Builder(this, CHAT_LIVE_UPDATE_NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.small_icon)
             .setContentTitle(getString(R.string.notification_live_update_title))
             .setContentText(getString(R.string.app_name))
             .setContentIntent(buildLaunchPendingIntent())
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .build()
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            notificationBuilder.setRequestPromotedOngoing(true)
+        }
+        if (Build.VERSION.SDK_INT >= 36) {
+            notificationBuilder.setShortCriticalText(
+                getString(R.string.notification_live_update_chip_thinking)
+            )
+        }
+        val notification = notificationBuilder.build()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             ServiceCompat.startForeground(
                 this,
@@ -107,10 +125,13 @@ class ChatGenerationForegroundService : Service() {
     companion object {
         private const val ACTION_RECONCILE = "me.rerere.rikkahub.action.RECONCILE_CHAT_GENERATION_FGS"
         private const val NOTIFICATION_ID = 2002
+        private const val STARTUP_TIMEOUT_MS = 5_000L
         private val shouldRun = AtomicBoolean(false)
+        private val readiness = ForegroundServiceReadiness()
 
         fun start(context: Context) {
             shouldRun.set(true)
+            readiness.requestStart()
             runCatching {
                 ContextCompat.startForegroundService(
                     context.applicationContext,
@@ -118,11 +139,17 @@ class ChatGenerationForegroundService : Service() {
                         action = ACTION_RECONCILE
                     },
                 )
-            }.onFailure { Log.w(TAG, "Unable to request chat-generation foreground service", it) }
+            }.onFailure {
+                readiness.markUnavailable()
+                Log.w(TAG, "Unable to request chat-generation foreground service", it)
+            }
         }
+
+        suspend fun awaitReady(): Boolean = readiness.awaitReady(STARTUP_TIMEOUT_MS)
 
         fun stop(context: Context) {
             shouldRun.set(false)
+            readiness.requestStop()
             val serviceIntent = Intent(context, ChatGenerationForegroundService::class.java).apply {
                 action = ACTION_RECONCILE
             }

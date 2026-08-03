@@ -8,12 +8,14 @@ import android.util.Log
 import android.widget.Toast
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.withTimeoutOrNull
 import me.rerere.rikkahub.service.AgentOverlay
 import me.rerere.rikkahub.service.RikkaAccessibilityService
@@ -39,6 +41,7 @@ import me.rerere.ai.provider.Provider
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
+import me.rerere.ai.provider.providers.openai.ResponseStreamErrorException
 import me.rerere.ai.registry.ModelRegistry
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
@@ -51,6 +54,7 @@ import me.rerere.rikkahub.data.ai.transformers.MessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.OutputMessageTransformer
 import me.rerere.rikkahub.data.files.FileFolders
 import java.io.File
+import java.io.IOException
 import me.rerere.rikkahub.data.ai.transformers.onGenerationFinish
 import me.rerere.rikkahub.data.ai.transformers.transforms
 import me.rerere.rikkahub.data.ai.transformers.visualTransforms
@@ -70,6 +74,114 @@ import kotlin.uuid.Uuid
 private const val TAG = "GenerationHandler"
 private const val MAX_TOOL_OUTPUT_CHARS = 32 * 1024
 private const val TOOL_OUTPUT_PREVIEW_CHARS = 4 * 1024
+private const val GENERATION_STREAM_RETRY_INITIAL_DELAY_MS = 750L
+private const val GENERATION_STREAM_RETRY_MAX_DELAY_MS = 4_000L
+
+private val USER_CANCELLATION_MARKERS = listOf(
+    "canceled by user",
+    "cancelled by user",
+    "user_canceled",
+    "user_cancelled",
+)
+
+private fun isCancellationFailure(failure: Throwable): Boolean =
+    generateSequence(failure) { it.cause }
+        .take(8)
+        .any { cause ->
+            cause is CancellationException ||
+                USER_CANCELLATION_MARKERS.any { marker ->
+                    cause.message?.contains(marker, ignoreCase = true) == true
+                }
+        }
+
+internal fun shouldRetryGenerationStreamFailure(
+    failure: Throwable,
+    retryAttempt: Long,
+    maxRetries: Int,
+    receivedMeaningfulOutput: Boolean,
+): Boolean {
+    if (receivedMeaningfulOutput || retryAttempt >= maxRetries.coerceAtLeast(0).toLong()) {
+        return false
+    }
+    if (failure is ResponseStreamErrorException || isContextLimitFailure(failure)) {
+        return false
+    }
+    // Retry provider, parsing, and local processing failures alike. Cancellation is kept
+    // out of the retry loop so stop-generation and parent-scope cancellation propagate.
+    return !isCancellationFailure(failure)
+}
+
+private fun isContextLimitFailure(failure: Throwable): Boolean =
+    generateSequence(failure) { it.cause }
+        .take(8)
+        .any { cause ->
+            val text = (cause.message.orEmpty() + " " + cause.toString())
+                .lowercase()
+                .replace('_', ' ')
+            "context length exceeded" in text ||
+                "maximum context length" in text ||
+                "maximum context window" in text
+        }
+
+private fun generationStreamRetryDelayMs(retryAttempt: Long): Long =
+    ((retryAttempt + 1) * GENERATION_STREAM_RETRY_INITIAL_DELAY_MS)
+        .coerceAtMost(GENERATION_STREAM_RETRY_MAX_DELAY_MS)
+
+private fun retryFailureReason(failure: Throwable): String =
+    generateSequence(failure) { it.cause }
+        .mapNotNull { it.message?.trim()?.takeIf(String::isNotBlank) }
+        .firstOrNull()
+        ?.replace(Regex("\\s+"), " ")
+        ?.take(240)
+        ?: failure.javaClass.simpleName
+
+private fun retryStatusText(
+    context: Context,
+    retryNumber: Long,
+    maxRetries: Int,
+    failure: Throwable,
+): String = context.getString(
+    me.rerere.rikkahub.R.string.chat_page_retrying,
+    retryNumber,
+    maxRetries,
+    retryFailureReason(failure),
+)
+
+private fun clearRetryStatus(processingStatus: MutableStateFlow<String?>) {
+    processingStatus.value = null
+}
+
+private suspend fun <T> retryGenerationTransportRequest(
+    maxRetries: Int,
+    onRetry: (retryNumber: Long, failure: Throwable) -> Unit = { _, _ -> },
+    request: suspend () -> T,
+): T {
+    var retryAttempt = 0L
+    while (true) {
+        try {
+            return request()
+        } catch (failure: Throwable) {
+            if (!shouldRetryGenerationStreamFailure(
+                    failure = failure,
+                    retryAttempt = retryAttempt,
+                    maxRetries = maxRetries,
+                    receivedMeaningfulOutput = false,
+                )) {
+                throw failure
+            }
+            val delayMs = generationStreamRetryDelayMs(retryAttempt)
+            Log.w(
+                TAG,
+                "generateText: retrying after failure " +
+                    "(${retryAttempt + 1}/$maxRetries) in ${delayMs}ms",
+                failure,
+            )
+            onRetry(retryAttempt + 1, failure)
+            delay(delayMs)
+            retryAttempt++
+        }
+    }
+}
 
 /**
  * Keys whose string values are sensitive enough that the raw value MUST NOT land in
@@ -294,6 +406,10 @@ class GenerationHandler(
         // request is built. The callback may return a compacted request history; the returned
         // list is request-only and does not replace the conversation's original messages.
         onAfterToolExecution: suspend (List<UIMessage>) -> List<UIMessage>? = { null },
+        // Called immediately before every model request, including the request after a tool
+        // result. ChatService uses this to reassert the foreground service before a background
+        // continuation opens a new socket.
+        onBeforeModelRequest: suspend () -> Unit = {},
         // Returns true when the user has pre-approved [toolName] for this turn (e.g.
         // "Allow for this chat" or "Always Allow" granted earlier). When true, the loop
         // below skips the Pending flip and lets the tool execute. ChatService injects the
@@ -408,6 +524,7 @@ class GenerationHandler(
             // Skip generation if we have approved/denied tool calls to handle
             if (pendingTools.isEmpty()) {
                 try {
+                    onBeforeModelRequest()
                     generateInternal(
                         assistant = assistant,
                         settings = settings,
@@ -1036,11 +1153,50 @@ class GenerationHandler(
                     stream = true
                 )
             )
+            var receivedMeaningfulOutput = false
             providerImpl.streamText(
                 providerSetting = provider,
                 messages = internalMessages,
                 params = params
-            ).collect {
+            ).onCompletion { cause ->
+                // Some SSE implementations report an abruptly closed socket through onClosed
+                // without an exception. Treat a clean close with no text/tool/reasoning as a
+                // transport failure so the retry policy can recover a background continuation.
+                if (cause == null && !receivedMeaningfulOutput) {
+                    throw IOException("Model stream closed without meaningful output")
+                }
+            }.retryWhen { cause, retryAttempt ->
+                val shouldRetry = shouldRetryGenerationStreamFailure(
+                    failure = cause,
+                    retryAttempt = retryAttempt,
+                    maxRetries = params.maxStreamRetries,
+                    receivedMeaningfulOutput = receivedMeaningfulOutput,
+                )
+                if (shouldRetry) {
+                    val delayMs = generationStreamRetryDelayMs(retryAttempt)
+                    processingStatus.value = retryStatusText(
+                        context = context,
+                        retryNumber = retryAttempt + 1,
+                        maxRetries = params.maxStreamRetries,
+                        failure = cause,
+                    )
+                    Log.w(
+                        TAG,
+                        "streamText: retrying after failure " +
+                            "(${retryAttempt + 1}/${params.maxStreamRetries}) in ${delayMs}ms",
+                        cause,
+                    )
+                    delay(delayMs)
+                }
+                shouldRetry
+            }.collect {
+                if (it.choices.any { choice ->
+                    choice.delta?.parts?.isNotEmpty() == true ||
+                            choice.message?.parts?.isNotEmpty() == true
+                    }) {
+                    receivedMeaningfulOutput = true
+                    clearRetryStatus(processingStatus)
+                }
                 messages = messages.handleMessageChunk(chunk = it, model = model)
                 it.usage?.let { usage ->
                     messages = messages.mapIndexed { index, message ->
@@ -1062,11 +1218,23 @@ class GenerationHandler(
                     stream = false
                 )
             )
-            val chunk = providerImpl.generateText(
-                providerSetting = provider,
-                messages = internalMessages,
-                params = params,
-            )
+            val chunk = retryGenerationTransportRequest(
+                maxRetries = params.maxStreamRetries,
+                onRetry = { retryNumber, failure ->
+                    processingStatus.value = retryStatusText(
+                        context = context,
+                        retryNumber = retryNumber,
+                        maxRetries = params.maxStreamRetries,
+                        failure = failure,
+                    )
+                },
+            ) {
+                providerImpl.generateText(
+                    providerSetting = provider,
+                    messages = internalMessages,
+                    params = params,
+                )
+            }
             messages = messages.handleMessageChunk(chunk = chunk, model = model)
             chunk.usage?.let { usage ->
                 messages = messages.mapIndexed { index, message ->

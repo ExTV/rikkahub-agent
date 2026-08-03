@@ -272,6 +272,7 @@
   <string name="chat_page_compress_target_tokens">Target Token Size</string>
   <string name="chat_page_compress_warning">Compaction only updates the context summary sent to the model. Original messages are preserved.</string>
   <string name="chat_page_compressing">Compressing...</string>
+  <string name="chat_page_retrying">Retrying (%1$d/%2$d). Previous failure: %3$s</string>
   <string name="chat_page_conversation_system_prompt">Conversation System Prompt</string>
   <string name="chat_page_conversation_system_prompt_clear">Clear</string>
   <string name="chat_page_conversation_system_prompt_hint">Override the assistant\'s system prompt for this conversation</string>
@@ -1887,7 +1888,7 @@
   <string name="setting_model_page_auto_compaction_tokens">Token threshold</string>
   <string name="setting_model_page_auto_compaction_tokens_desc">Enter the threshold in thousands of tokens. For example, 8k means 8,000 tokens.</string>
   <string name="setting_model_page_context_compaction_target">Compression target</string>
-  <string name="setting_model_page_context_compaction_target_desc">Set the target summary size in thousands of tokens. Leave blank to use 10% of the maximum context of the current chat model.</string>
+  <string name="setting_model_page_context_compaction_target_desc">Set the target summary size in thousands of tokens. Leave blank to use 1% of the active context (for example, 3k with a 300k context).</string>
   <string name="setting_model_page_auto_compaction_keep_tool_calls">Keep recent tool calls</string>
   <string name="setting_model_page_auto_compaction_keep_tool_calls_desc">Automatic compaction keeps their raw input and output. Set 0 to compact the whole active context.</string>
   <string name="setting_model_page_response_stream_retries">Response stream retries</string>

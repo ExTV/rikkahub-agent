@@ -1,9 +1,10 @@
 package me.rerere.rikkahub.data.datastore.migration
 
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.rikkahub.utils.JsonInstant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -138,5 +139,23 @@ class PreferenceStoreMigrationHelpersTest {
         val (migratedAssistants, extracted) = migrateAssistantsQuickMessages(bad)
         assertEquals(bad, migratedAssistants)
         assertTrue(extracted.isEmpty())
+    }
+
+    @Test
+    fun `settings json migration keeps the percentage default unset`() {
+        val migrated = JsonInstant.parseToJsonElement(
+            SettingsJsonMigrator.migrate("{\"contextCompactionTargetTokensK\":null}")
+        ).jsonObject
+
+        assertTrue(migrated["contextCompactionTargetTokensK"] is JsonNull)
+    }
+
+    @Test
+    fun `settings json migration removes the old fixed two thousand token default`() {
+        val migrated = JsonInstant.parseToJsonElement(
+            SettingsJsonMigrator.migrate("{\"contextCompactionTargetTokensK\":2}")
+        ).jsonObject
+
+        assertTrue(migrated["contextCompactionTargetTokensK"] is JsonNull)
     }
 }

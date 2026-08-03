@@ -1782,7 +1782,7 @@
   <string name="setting_model_page_auto_compaction_tokens">Порог токенов</string>
   <string name="setting_model_page_auto_compaction_tokens_desc">Введите порог в тысячах токенов. Например, 8k означает 8 000 токенов.</string>
   <string name="setting_model_page_context_compaction_target">Цель сжатия</string>
-  <string name="setting_model_page_context_compaction_target_desc">Укажите целевой размер сводки в тысячах токенов. Оставьте пустым, чтобы использовать 10% максимального контекста модели чата.</string>
+  <string name="setting_model_page_context_compaction_target_desc">Укажите целевой размер сводки в тысячах токенов. Оставьте пустым, чтобы использовать 1% текущего контекста (например, 3k для контекста 300k).</string>
   <string name="setting_model_page_auto_compaction_keep_tool_calls">Сохранять последние вызовы инструментов</string>
   <string name="setting_model_page_auto_compaction_keep_tool_calls_desc">Автоматическое сжатие сохраняет исходные входные данные и результаты этих вызовов. Установите 0, чтобы сжать весь текущий контекст.</string>
   <string name="setting_model_page_response_stream_retries">Повторные попытки потока Response API</string>

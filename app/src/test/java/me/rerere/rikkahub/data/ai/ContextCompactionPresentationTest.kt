@@ -79,6 +79,73 @@ class ContextCompactionPresentationTest {
         assertTrue(ContextCompactionPresentation.hasDisplayTool(merged.currentMessages.last()))
     }
 
+    @Test
+    fun `stream updates keep compaction card before parts emitted afterwards`() {
+        val initial = UIMessage(
+            role = me.rerere.ai.core.MessageRole.ASSISTANT,
+            parts = listOf(
+                UIMessagePart.Text("search results"),
+                UIMessagePart.Tool(
+                    toolCallId = "search-before-compaction",
+                    toolName = "search_web",
+                    input = "{}",
+                    output = listOf(UIMessagePart.Text("first result")),
+                ),
+            ),
+        )
+        val conversation = Conversation(
+            assistantId = Uuid.random(),
+            messageNodes = listOf(MessageNode(messages = listOf(initial))),
+        )
+        val card = ContextCompactionPresentation.createTool(sampleCompaction(conversation))
+        val withCard = ContextCompactionPresentation.attachToMessage(
+            conversation = conversation,
+            messageId = initial.id,
+            tool = card,
+        )
+        val replacement = initial.copy(
+            parts = initial.parts + UIMessagePart.Tool(
+                toolCallId = "search-after-compaction",
+                toolName = "web_fetch",
+                input = "{}",
+                output = listOf(UIMessagePart.Text("second result")),
+            ),
+        )
+
+        val restored = ContextCompactionPresentation.preserveDisplayTools(
+            previous = withCard.currentMessages.single(),
+            replacement = replacement,
+        )
+
+        assertEquals(
+            listOf(
+                "search_web",
+                ContextCompactionPresentation.TOOL_NAME,
+                "web_fetch",
+            ),
+            restored.parts.filterIsInstance<UIMessagePart.Tool>().map { it.toolName },
+        )
+    }
+
+    @Test
+    fun `compaction card reports retained raw tool count`() {
+        val conversation = Conversation(
+            assistantId = Uuid.random(),
+            messageNodes = listOf(MessageNode(messages = listOf(UIMessage.user("earlier context")))),
+        )
+        val compaction = sampleCompaction(conversation).copy(
+            summary = "compressed context\n\n" +
+                "[Raw context retained verbatim after this summary]\n" +
+                "raw_messages=1\ncompleted_tool_calls=55\n" +
+                "[End raw context retention report]"
+        )
+
+        val tool = ContextCompactionPresentation.createTool(compaction)
+
+        assertTrue(tool.input.contains("\"retained_raw_tool_calls\":55"))
+        assertTrue((tool.output.single() as UIMessagePart.Text).text.contains("completed_tool_calls=55"))
+    }
+
     private fun sampleCompaction(conversation: Conversation) = ConversationCompaction(
         conversationId = conversation.id,
         summary = "compressed context",

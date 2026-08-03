@@ -19,20 +19,34 @@ internal object ContextCompactionPlanner {
     private const val TOOL_HISTORY_FOOTER = "[End tool execution history]"
     private const val TOOL_RECORD_HEADER = "[Retained tool execution record]"
     private const val TOOL_RECORD_FOOTER = "[End retained tool execution record]"
+    private const val RAW_CONTEXT_HEADER = "[Raw context retained verbatim after this summary]"
+    private const val RAW_CONTEXT_FOOTER = "[End raw context retention report]"
+    /**
+     * Map requests must stay bounded even when one tool returns an entire web page or file.
+     * The deterministic digest below keeps the call identity and a bounded factual result in
+     * the persisted summary, so sending the complete raw result to every map request is both
+     * wasteful and capable of taking longer than the generation turn budget.
+     */
+    private const val MAP_TOOL_OUTPUT_PREVIEW_CHARS = 1_024
+    private val retainedRawToolCountPattern = Regex("completed_tool_calls=(\\d+)")
+    private val rawContextReportPattern = Regex(
+        "${Regex.escape(RAW_CONTEXT_HEADER)}\\s*(.*?)\\s*${Regex.escape(RAW_CONTEXT_FOOTER)}",
+        setOf(RegexOption.DOT_MATCHES_ALL),
+    )
     private val retainedToolRecordPattern = Regex(
         "${Regex.escape(TOOL_RECORD_HEADER)}\\s*(.*?)\\s*${Regex.escape(TOOL_RECORD_FOOTER)}",
         setOf(RegexOption.DOT_MATCHES_ALL),
     )
     /**
-     * Keep map requests bounded even when the selected compression model advertises a very large
-     * context window. A 400k-token conversation therefore becomes roughly four independent
-     * 100k-token summaries before the reduce pass, instead of one expensive request.
+     * Safety ceiling for provider metadata that may be missing or stale. An explicit token-mode
+     * setting is allowed to bypass this ceiling because it is the user's declared model limit.
      */
     private const val MAX_MAP_INPUT_TOKENS = 100_000
 
     fun inputBudgetTokens(
         contextLength: Int?,
         targetTokens: Int,
+        allowFullContext: Boolean = false,
     ): Int {
         val availableContext = (contextLength?.takeIf { it > 0 } ?: DEFAULT_CONTEXT_LENGTH)
             .coerceAtLeast(MIN_INPUT_BUDGET_TOKENS + PROMPT_OVERHEAD_TOKENS)
@@ -41,7 +55,12 @@ internal object ContextCompactionPlanner {
             .coerceAtMost(availableContext / 2)
         val remaining = (availableContext - outputReserve - PROMPT_OVERHEAD_TOKENS)
             .coerceAtLeast(MIN_INPUT_BUDGET_TOKENS)
-        return minOf(remaining, availableContext * 3 / 4)
+        val safetyCeiling = if (allowFullContext) {
+            availableContext
+        } else {
+            availableContext * 3 / 4
+        }
+        return minOf(remaining, safetyCeiling)
             .coerceAtLeast(MIN_INPUT_BUDGET_TOKENS)
     }
 
@@ -49,9 +68,16 @@ internal object ContextCompactionPlanner {
      * Returns the maximum source size for one map request. A source that already fits this
      * budget remains a single request; only oversized histories are split.
      */
-    fun mapInputBudgetTokens(inputBudgetTokens: Int): Int {
+    fun mapInputBudgetTokens(
+        inputBudgetTokens: Int,
+        allowLargeContext: Boolean = false,
+    ): Int {
         require(inputBudgetTokens > 0) { "inputBudgetTokens must be positive" }
-        return inputBudgetTokens.coerceAtMost(MAX_MAP_INPUT_TOKENS)
+        return if (allowLargeContext) {
+            inputBudgetTokens
+        } else {
+            inputBudgetTokens.coerceAtMost(MAX_MAP_INPUT_TOKENS)
+        }
     }
 
     /**
@@ -103,6 +129,19 @@ internal object ContextCompactionPlanner {
     }.trim()
 
     /**
+     * Source representation used only for map requests. Tool names, inputs and every tool part
+     * remain present, while each potentially unbounded result is represented by a head/tail
+     * preview. The persisted conversation and the deterministic tool digest still retain the
+     * original result, so this is a request-size bound rather than data loss.
+     */
+    fun mapSourceText(message: UIMessage): String = buildString {
+        append('[')
+        append(message.role.name)
+        append("]:\n")
+        message.parts.forEach { appendPartForMap(it) }
+    }.trim()
+
+    /**
      * This contract is appended by [ChatService] to every compression request, including when
      * the user has customized the normal compression prompt. A generic "preserve key facts"
      * instruction is too weak: models commonly retain the user's request but drop the concrete
@@ -118,6 +157,48 @@ internal object ContextCompactionPlanner {
         such as "tools were used". If an output is long, condense it faithfully instead of
         omitting its result.
     """.trimIndent()
+
+    /**
+     * A compaction boundary is message-based. One assistant message can contain dozens of tool
+     * rounds, so keeping the latest few calls may retain that whole message after the summary.
+     * Make this explicit in both the next model request and the display-only compaction card.
+     */
+    fun rawContextRetentionReport(messages: List<UIMessage>): String {
+        if (messages.isEmpty()) return ""
+        val completedToolCalls = completedToolCallCount(messages)
+        if (completedToolCalls == 0) return ""
+        return """
+            $RAW_CONTEXT_HEADER
+            raw_messages=${messages.size}
+            completed_tool_calls=$completedToolCalls
+            These messages follow this summary in the active model context. Their original tool
+            names, inputs, and outputs were not deleted or replaced by the summary.
+            $RAW_CONTEXT_FOOTER
+        """.trimIndent()
+    }
+
+    fun retainedRawToolCallCount(summary: String): Int = rawContextReportPattern
+        .findAll(summary)
+        .lastOrNull()
+        ?.groupValues
+        ?.get(1)
+        ?.let(retainedRawToolCountPattern::find)
+        ?.groupValues
+        ?.get(1)
+        ?.toIntOrNull()
+        ?: 0
+
+    @Suppress("DEPRECATION")
+    fun completedToolCallCount(messages: List<UIMessage>): Int = messages.sumOf { message ->
+        message.parts.count { part ->
+            when (part) {
+                is UIMessagePart.Tool ->
+                    !ContextCompactionPresentation.isDisplayTool(part) && part.output.isNotEmpty()
+                is UIMessagePart.ToolResult -> true
+                else -> false
+            }
+        }
+    }
 
     /**
      * A compression model may still omit tool results despite an explicit instruction. Keep a
@@ -194,6 +275,26 @@ internal object ContextCompactionPlanner {
     )
 
     /**
+     * The configured target is the desired size of the complete summary. During a map pass the
+     * same target must be distributed across all independent requests. Otherwise a two-group
+     * compaction asks each model call for the full target and can spend several minutes producing
+     * redundant output before the summaries are concatenated.
+     */
+    fun mapOutputTargetTokens(
+        finalTargetTokens: Int,
+        groupCount: Int,
+        maxPerRequestTokens: Int,
+    ): Int {
+        require(groupCount > 0) { "groupCount must be positive" }
+        require(maxPerRequestTokens > 0) { "maxPerRequestTokens must be positive" }
+        val target = finalTargetTokens.coerceAtLeast(1)
+        val distributed = ((target.toLong() + groupCount - 1L) / groupCount)
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
+        return distributed.coerceAtMost(maxPerRequestTokens).coerceAtLeast(256)
+    }
+
+    /**
      * A character-count-only estimate badly undercounts Chinese, Japanese, Korean, emoji and
      * other non-ASCII content. ASCII text is estimated at three chars/token while non-ASCII
      * chars consume one token each. This intentionally overestimates mixed text to keep every
@@ -258,6 +359,7 @@ internal object ContextCompactionPlanner {
                 null
             } else {
                 buildString {
+                    appendLine("- Call ID: ${part.toolCallId}")
                     appendLine("- Tool: ${part.toolName}")
                     appendLine("  Result:")
                     part.output.forEach { appendPartForSummary(it) }
@@ -266,6 +368,7 @@ internal object ContextCompactionPlanner {
             }
         }
         is UIMessagePart.ToolResult -> buildString {
+            appendLine("- Call ID: ${part.toolCallId}")
             appendLine("- Tool: ${part.toolName}")
             appendLine("  Result: ${part.content}")
             appendLine("  Input: ${part.arguments}")
@@ -328,7 +431,10 @@ internal object ContextCompactionPlanner {
     private fun StringBuilder.appendPartForSummary(part: UIMessagePart) {
         if (ContextCompactionPresentation.isDisplayTool(part)) return
         when (part) {
-            is UIMessagePart.Text -> appendLine(part.text)
+            // The retention report describes the layout produced by one specific compaction.
+            // Re-summarizing it would turn that old boundary into a stale claim in the next
+            // compaction. The current boundary gets a newly computed report in ChatService.
+            is UIMessagePart.Text -> appendLine(stripRawContextRetentionReports(part.text))
             is UIMessagePart.Reasoning -> appendLine(part.reasoning)
             is UIMessagePart.Tool -> {
                 appendLine("[Completed tool execution record — must be retained in summary]")
@@ -356,4 +462,60 @@ internal object ContextCompactionPlanner {
             UIMessagePart.Search -> appendLine("[Search]")
         }
     }
+
+    @Suppress("DEPRECATION")
+    private fun StringBuilder.appendPartForMap(part: UIMessagePart) {
+        if (ContextCompactionPresentation.isDisplayTool(part)) return
+        when (part) {
+            is UIMessagePart.Tool -> {
+                appendLine("[Completed tool execution record — must be retained in summary]")
+                appendLine("Tool: ${part.toolName}")
+                appendLine("Input: ${part.input}")
+                appendLine("Output:")
+                appendLine(
+                    previewForMap(
+                        part.output.joinToString(separator = "") {
+                            buildString { appendPartForSummary(it) }
+                        }
+                    )
+                )
+                appendLine("[End completed tool execution record]")
+            }
+
+            is UIMessagePart.ToolResult -> {
+                appendLine("[Completed tool execution record — must be retained in summary]")
+                appendLine("Tool: ${part.toolName}")
+                appendLine("Arguments: ${part.arguments}")
+                appendLine("Content:")
+                appendLine(previewForMap(part.content.toString()))
+                appendLine("[End completed tool execution record]")
+            }
+
+            is UIMessagePart.Text -> appendLine(stripRawContextRetentionReports(part.text))
+            is UIMessagePart.Reasoning -> appendLine(part.reasoning)
+            is UIMessagePart.ToolCall -> {
+                appendLine("[Tool call requested but no recorded result: ${part.toolName}]")
+                appendLine("Arguments: ${part.arguments}")
+            }
+            is UIMessagePart.Document -> appendLine("[Document: ${part.fileName}]")
+            is UIMessagePart.Image -> appendLine("[Image]")
+            is UIMessagePart.Video -> appendLine("[Video]")
+            is UIMessagePart.Audio -> appendLine("[Audio]")
+            UIMessagePart.Search -> appendLine("[Search]")
+        }
+    }
+
+    private fun previewForMap(text: String): String {
+        if (text.length <= MAP_TOOL_OUTPUT_PREVIEW_CHARS) return text
+        val headChars = (MAP_TOOL_OUTPUT_PREVIEW_CHARS * 3 / 4).coerceAtLeast(1)
+        val tailChars = (MAP_TOOL_OUTPUT_PREVIEW_CHARS - headChars).coerceAtLeast(1)
+        return buildString {
+            append(text, 0, headChars)
+            append("\n…[tool result preview truncated for map request]…\n")
+            append(text, text.length - tailChars, text.length)
+        }
+    }
+
+    private fun stripRawContextRetentionReports(text: String): String =
+        rawContextReportPattern.replace(text, "").trim()
 }

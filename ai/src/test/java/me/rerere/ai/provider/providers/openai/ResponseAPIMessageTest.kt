@@ -2,6 +2,7 @@ package me.rerere.ai.provider.providers.openai
 
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -19,6 +20,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import kotlinx.coroutines.CancellationException
 import java.io.IOException
 
 /**
@@ -453,11 +455,58 @@ class ResponseAPIMessageTest {
                 maxRetries = 2,
             )
         )
-        assertFalse(
+        assertTrue(
             shouldRetryResponseStream(
                 failure = IllegalStateException("HTTP 401"),
                 retryAttempt = 0,
                 maxRetries = 2,
+            )
+        )
+        assertFalse(
+            shouldRetryResponseStream(
+                failure = CancellationException("Generation cancelled by user"),
+                retryAttempt = 0,
+                maxRetries = 2,
+            )
+        )
+    }
+
+    @Test
+    fun `response failed event exposes provider code and message and is not retried`() {
+        val failure = parseResponseStreamError(
+            payload = Json.parseToJsonElement(
+                """{"type":"response.failed","response":{"error":{"code":"context_length_exceeded","message":"maximum context length is 300000 tokens"}}}"""
+            ).jsonObject,
+            eventType = "response.failed",
+        )
+
+        assertEquals("context_length_exceeded", failure.code)
+        assertTrue(failure.message!!.contains("context_length_exceeded"))
+        assertTrue(failure.message!!.contains("maximum context length"))
+        assertFalse(shouldRetryResponseStream(failure, retryAttempt = 0, maxRetries = 10))
+    }
+
+    @Test
+    fun `error event uses top level provider message`() {
+        val failure = parseResponseStreamError(
+            payload = Json.parseToJsonElement(
+                """{"type":"error","code":"rate_limit_exceeded","message":"try again later"}"""
+            ).jsonObject,
+            eventType = "error",
+        )
+
+        assertEquals("rate_limit_exceeded", failure.code)
+        assertTrue(failure.message!!.contains("try again later"))
+        assertFalse(shouldRetryResponseStream(failure, retryAttempt = 0, maxRetries = 10))
+    }
+
+    @Test
+    fun `context length errors returned as HTTP failures are not retried`() {
+        assertFalse(
+            shouldRetryResponseStream(
+                failure = IOException("context_length_exceeded: maximum context length is 300000"),
+                retryAttempt = 0,
+                maxRetries = 10,
             )
         )
     }

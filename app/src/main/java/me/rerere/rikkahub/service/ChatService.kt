@@ -2,11 +2,15 @@ package me.rerere.rikkahub.service
 
 import android.app.Application
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.net.toUri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,6 +31,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.jsonObject
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
@@ -89,6 +94,7 @@ import me.rerere.rikkahub.data.datastore.AutoCompactionThresholdMode
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getAssistantById
+import me.rerere.rikkahub.data.datastore.getCompactionContextLength
 import me.rerere.rikkahub.data.datastore.getContextCompactionTargetTokens
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
@@ -110,9 +116,22 @@ import me.rerere.workspace.WorkspaceShellStatus
 import java.time.Instant
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.uuid.Uuid
 
 private const val TAG = "ChatService"
+private const val COMPACTION_REQUEST_TIMEOUT_MS = 3 * 60_000L
+private const val COMPACTION_TOTAL_TIMEOUT_MS = 8 * 60_000L
+private const val COMPACTION_MAX_REQUEST_OUTPUT_TOKENS = 16_384
+private const val MAX_PARALLEL_COMPACTION_REQUESTS = 4
+private const val MAX_FULL_CONTEXT_MAP_GROUPS = 8
+/**
+ * Streaming chunks can arrive once per token. Persisting every chunk rewrites all message nodes
+ * and can throttle the provider, while persisting only at the end loses the visible response when
+ * the user changes screens or the process is killed. Keep the durable snapshot reasonably fresh
+ * without turning Room into the stream's bottleneck.
+ */
+private const val STREAMING_PERSIST_INTERVAL_MS = 500L
 
 private fun Throwable.isContextLimitError(): Boolean {
     val markers = listOf(
@@ -151,6 +170,14 @@ internal fun backgroundTextGenerationParams(
     customHeaders = model.customHeaders,
     customBody = model.customBodies,
 )
+
+/**
+ * Resolve the compression model's usable context ceiling. The token-threshold setting is an
+ * explicit user-controlled limit when that mode is selected, which also covers providers such
+ * as Codex whose model list does not publish context metadata.
+ */
+internal fun compactionContextLength(settings: Settings, model: Model): Int? =
+    settings.getCompactionContextLength(model)
 
 data class ChatError(
     val id: Uuid = Uuid.random(),
@@ -223,6 +250,20 @@ class ChatService(
     private fun compactionMutexFor(conversationId: Uuid): Mutex =
         compactionMutexes.getOrPut(conversationId) { Mutex() }
 
+    /** Serialises full conversation rewrites, including periodic streaming snapshots. */
+    private val persistenceMutexes = ConcurrentHashMap<Uuid, Mutex>()
+    private fun persistenceMutexFor(conversationId: Uuid): Mutex =
+        persistenceMutexes.getOrPut(conversationId) { Mutex() }
+
+    /**
+     * A monotonically increasing marker lets a flush tell whether a newer stream chunk arrived
+     * while the Room transaction was in progress. Removing only the marker we observed avoids
+     * dropping that newer dirty state.
+     */
+    private val streamingPersistenceSequence = AtomicLong(0L)
+    private val pendingStreamingPersistence = ConcurrentHashMap<Uuid, Long>()
+    private val lastStreamingPersistAt = ConcurrentHashMap<Uuid, Long>()
+
     // This starts before the chat coroutine is dispatched, so a user can background the app
     // immediately after pressing Send without racing the foreground-service promotion.
     private val foregroundWorkTracker = ForegroundWorkTracker(
@@ -281,7 +322,16 @@ class ChatService(
     private val lifecycleObserver = LifecycleEventObserver { _, event ->
         when (event) {
             Lifecycle.Event.ON_START -> _isForeground.value = true
-            Lifecycle.Event.ON_STOP -> _isForeground.value = false
+            Lifecycle.Event.ON_STOP -> {
+                _isForeground.value = false
+                // A user leaving the app does not cancel AppScope generation. Flush the latest
+                // in-memory stream state while the process is still alive so returning to the
+                // conversation (or an imminent process kill) never falls behind the UI.
+                appScope.launch(Dispatchers.IO) {
+                    runCatching { flushStreamingPersistence() }
+                        .onFailure { Log.w(TAG, "flushStreamingPersistence on stop failed", it) }
+                }
+            }
             else -> {}
         }
     }
@@ -296,6 +346,9 @@ class ChatService(
         sessions.clear()
         sessionMutexes.clear()
         compactionMutexes.clear()
+        persistenceMutexes.clear()
+        pendingStreamingPersistence.clear()
+        lastStreamingPersistAt.clear()
     }.onFailure {
         // Don't let a teardown hiccup escape, but don't swallow it silently either —
         // a failure here can leave the lifecycle observer registered (slow leak).
@@ -336,6 +389,10 @@ class ChatService(
             // sessions where many conversations cycle in and out of memory.
             sessionMutexes.remove(conversationId)
             compactionMutexes.remove(conversationId)
+            if (!pendingStreamingPersistence.containsKey(conversationId)) {
+                persistenceMutexes.remove(conversationId)
+                lastStreamingPersistAt.remove(conversationId)
+            }
             _sessionsVersion.value++
             Log.i(TAG, "removeSession: $conversationId (remaining: ${sessions.size})")
         }
@@ -352,6 +409,9 @@ class ChatService(
         session.cleanup()
         sessionMutexes.remove(conversationId)
         compactionMutexes.remove(conversationId)
+        pendingStreamingPersistence.remove(conversationId)
+        lastStreamingPersistAt.remove(conversationId)
+        persistenceMutexes.remove(conversationId)
         _sessionsVersion.value++
         Log.i(TAG, "dropSession: $conversationId (remaining: ${sessions.size})")
     }
@@ -418,6 +478,10 @@ class ChatService(
             updateConversation(conversationId, conversation)
             settingsStore.updateAssistant(conversation.assistantId)
         } else {
+            // A send can race this asynchronous initialization for a brand-new conversation.
+            // Once the session already contains a user message, never replace it with the
+            // assistant preset that was computed from the stale empty snapshot.
+            if (getConversationFlow(conversationId).value.messageNodes.isNotEmpty()) return
             // 新建对话, 并添加预设消息
             val currentSettings = settingsStore.settingsFlowRaw.first()
             val assistant = currentSettings.getCurrentAssistant()
@@ -443,6 +507,7 @@ class ChatService(
         val releaseForegroundWork = foregroundWorkTracker.acquire()
         val job = appScope.launch {
             try {
+                awaitForegroundWorkReady()
                 runCatching { previousJob?.join() }
                 // Only a still-running generation was interrupted by this send. A completed
                 // failed turn may leave an old pending tool in history, but relabelling every
@@ -452,6 +517,11 @@ class ChatService(
                     finishInterruptedPendingTools(conversationId)
                 }
 
+                // The chat screen can be recreated before its asynchronous initialization
+                // finishes. Load the durable conversation before taking the snapshot used for
+                // the new user message, otherwise that message can be appended to an empty
+                // in-memory session and visually replace the recovered history.
+                ensureHydrated(conversationId)
                 val currentConversation = session.state.value
                 // Resolve the assistant from the conversation's own assistantId, not the
                 // global current-assistant pointer — otherwise switching assistants mid-
@@ -631,6 +701,7 @@ class ChatService(
         val releaseForegroundWork = foregroundWorkTracker.acquire()
         val job = appScope.launch {
             try {
+                awaitForegroundWorkReady()
                 val conversation = session.state.value
 
                 // Locate the message's node up front. indexOf returns -1 when the node is no
@@ -724,6 +795,7 @@ class ChatService(
         val releaseForegroundWork = foregroundWorkTracker.acquire()
         val job = appScope.launch {
             try {
+                awaitForegroundWorkReady()
                 convMutex.withLock {
                     // Hydrate from disk if the in-memory session is empty (post-restart
                     // path). Without this, the snapshot read below sees an empty
@@ -991,6 +1063,9 @@ class ChatService(
                         }
                     }
                 },
+                onBeforeModelRequest = {
+                    awaitForegroundWorkReady()
+                },
                 messages = messagesForGeneration,
                 assistant = assistant,
                 conversationSystemPrompt = conversation.customSystemPrompt,
@@ -1096,7 +1171,7 @@ class ChatService(
                         )
                     }
                 },
-            ).onCompletion {
+            ).onCompletion { completionCause ->
                 // 取消 Live Update 通知
                 cancelLiveUpdateNotification(conversationId)
 
@@ -1108,10 +1183,41 @@ class ChatService(
                     updateAt = Instant.now()
                 )
                 updateConversation(conversationId, updatedConversation)
+                // The stream may end because it is waiting for approval, because the user
+                // stopped it, or because transport failed. All three cases must leave the latest
+                // partial assistant message and tool calls on disk.
+                markStreamingPersistence(conversationId)
+                // onCompletion also runs for cancellation. Keep this final write alive after a
+                // user presses Stop so a cancelled job cannot discard its last partial chunk.
+                withContext(NonCancellable) {
+                    persistStreamingStateNow(conversationId, updateSearchIndex = true)
+                }
 
-                // Show notification if app is not in foreground
-                if (!isForeground.value && settings.displaySetting.enableNotificationOnMessageGeneration) {
-                    sendGenerationDoneNotification(conversationId, senderName)
+                // A Pending tool is an intentional pause, not a completed response. Surface the
+                // approval request when the UI is backgrounded so the foreground-service chip
+                // disappearing is not mistaken for the turn finishing. Transport failures and
+                // cancellation are reported by their existing error paths and must not emit a
+                // misleading completion notification here.
+                if (
+                    completionCause == null &&
+                    !isForeground.value &&
+                    settings.displaySetting.enableNotificationOnMessageGeneration
+                ) {
+                    val pendingTool = updatedConversation.currentMessages
+                        .asReversed()
+                        .asSequence()
+                        .flatMap { it.parts.asReversed().asSequence() }
+                        .filterIsInstance<UIMessagePart.Tool>()
+                        .firstOrNull { it.isPending }
+                    if (pendingTool != null) {
+                        sendToolApprovalRequiredNotification(
+                            conversationId = conversationId,
+                            senderName = senderName,
+                            pendingTool = pendingTool,
+                        )
+                    } else {
+                        sendGenerationDoneNotification(conversationId, senderName)
+                    }
                 }
             }.collect { chunk ->
                 when (chunk) {
@@ -1127,6 +1233,8 @@ class ChatService(
                             currentConversation.updateCurrentMessages(chunk.messages)
                         }
                         updateConversation(conversationId, updatedConversation)
+                        markStreamingPersistence(conversationId)
+                        persistStreamingStateIfDue(conversationId)
 
                         // Persist immediately when a tool transitions to "execution
                         // started but no output yet" — this writes the executionStartedAt
@@ -1143,7 +1251,7 @@ class ChatService(
                                 p.approvalState is ToolApprovalState.Approved
                         } ?: false
                         if (needsImmediatePersist) {
-                            saveConversation(conversationId, updatedConversation)
+                            persistStreamingStateNow(conversationId)
                         }
 
                         // 如果应用不在前台，发送 Live Update 通知
@@ -1185,6 +1293,7 @@ class ChatService(
                     model = model,
                     processingStatus = session.processingStatus,
                     force = true,
+                    compactEntireContext = true,
                 )
             }.onFailure {
                 Log.w(TAG, "Context-limit retry compaction failed", it)
@@ -1209,6 +1318,10 @@ class ChatService(
                 return
             }
         }
+
+        // Retry status is transient. Clear it before surfacing the final result so a failed
+        // stream does not leave the conversation stuck on “retrying” after the error card appears.
+        getOrCreateSession(conversationId).processingStatus.value = null
 
         generationResult.onFailure {
             // 取消 Live Update 通知
@@ -1262,33 +1375,26 @@ class ChatService(
         val conversation = getConversationFlow(conversationId).value
         var messagesNodes = conversation.messageNodes
 
-        // 移除无效 tool (未执行的 Tool)
-        messagesNodes = messagesNodes.mapIndexed { _, node ->
-            // Check for Tool type with non-executed tools
-            val hasPendingTools = node.currentMessage.getTools().any { !it.isExecuted }
-
-            if (hasPendingTools) {
-                // Keep messages that are ready to resume, such as approved/denied/answered tools.
-                val hasResumableTool = node.currentMessage.getTools().any {
-                    !it.isExecuted && it.approvalState.canResumeToolExecution()
-                }
-                if (hasResumableTool) {
-                    return@mapIndexed node
-                }
-
-                // If all tools are executed, it's valid
-                val allToolsExecuted = node.currentMessage.getTools().all { it.isExecuted }
-                if (allToolsExecuted && node.currentMessage.getTools().isNotEmpty()) {
-                    return@mapIndexed node
-                }
-
-                // Remove messages that still have unresolved tool approvals.
-                return@mapIndexed node.copy(
-                    messages = node.messages.filter { it.id != node.currentMessage.id },
-                    selectIndex = node.selectIndex - 1
+        // Close unresolved Auto/Pending tools left by a killed process, but keep the assistant
+        // message itself. Removing the whole node here made the recovered tool call disappear as
+        // soon as the user sent a follow-up message, and the next request then appeared to have
+        // no trace of the interrupted turn. Approved/Denied/Answered tools remain resumable and
+        // are handled by GenerationHandler's normal replay path.
+        messagesNodes = messagesNodes.map { node ->
+            val currentMessage = node.currentMessage
+            val hasUnresumableTool = currentMessage.getTools().any {
+                !it.isExecuted && !it.approvalState.canResumeToolExecution()
+            }
+            if (!hasUnresumableTool) {
+                node
+            } else {
+                val repairedMessage = currentMessage.finishPendingTools(::cancelToolByRecovery)
+                node.copy(
+                    messages = node.messages.map { message ->
+                        if (message.id == currentMessage.id) repairedMessage else message
+                    }
                 )
             }
-            node
         }
 
         // 更新index
@@ -1305,7 +1411,9 @@ class ChatService(
 
         if (messagesNodes != conversation.messageNodes) {
             conversationRepo.clearCompaction(conversationId)
-            updateConversation(conversationId, conversation.copy(messageNodes = messagesNodes))
+            // Persist the repair before the model request starts. If the process is killed again
+            // during the continuation, the historical tool call remains visible and replayable.
+            saveConversation(conversationId, conversation.copy(messageNodes = messagesNodes))
         }
     }
 
@@ -1317,6 +1425,19 @@ class ChatService(
                 )
             ),
             approvalState = ToolApprovalState.Denied("Generation cancelled by user")
+        )
+    }
+
+    private fun cancelToolByRecovery(tool: UIMessagePart.Tool): UIMessagePart.Tool {
+        return tool.copy(
+            output = listOf(
+                UIMessagePart.Text(
+                    """{"status":"interrupted","error":"The previous generation ended before this tool completed. No tool execution was resumed automatically."}"""
+                )
+            ),
+            approvalState = ToolApprovalState.Denied(
+                "Previous generation interrupted before tool execution completed"
+            )
         )
     }
 
@@ -1457,6 +1578,7 @@ class ChatService(
         model: Model,
         processingStatus: MutableStateFlow<String?>,
         force: Boolean = false,
+        compactEntireContext: Boolean = false,
     ): CompactedMessageView {
         var view = loadCompactedMessageView(conversation)
         if (!settings.enableAutoCompaction) {
@@ -1496,14 +1618,24 @@ class ChatService(
                     view.compaction
                 } else {
                     val targetTokens = settings.getContextCompactionTargetTokens(
-                        model.contextLength,
+                        compactionContextLength(settings, model),
                     )
                     val firstCompaction = createAutomaticCompaction(
                         conversation = latestConversation,
                         currentView = view,
                         settings = settings,
                         targetTokens = targetTokens,
-                        keepRecentToolCalls = settings.autoCompactionKeepRecentToolCalls,
+                        // A provider-reported context overflow means the local estimate missed
+                        // provider overhead (often a very large tool result or schema). Drop the
+                        // raw tail for this recovery pass so the continuation cannot immediately
+                        // submit the same oversized request again. The deterministic tool ledger
+                        // and the prose summary preserve the completed execution history, while
+                        // the original messages remain stored in the conversation.
+                        keepRecentToolCalls = if (compactEntireContext) {
+                            0
+                        } else {
+                            settings.autoCompactionKeepRecentToolCalls
+                        },
                     )
                     val firstView = ContextCompactionView.build(latestConversation, firstCompaction)
                     val triggerTokens = automaticCompactionTriggerTokens(settings, model)
@@ -1643,6 +1775,7 @@ class ChatService(
     ): Result<Unit> {
         val releaseForegroundWork = foregroundWorkTracker.acquire()
         return runCatching {
+            awaitForegroundWorkReady()
             compactionMutexFor(conversationId).withLock {
                 val latestConversation = getConversationFlow(conversationId).value
                     .takeIf { it.messageNodes.isNotEmpty() }
@@ -1696,6 +1829,18 @@ class ChatService(
         }
     }
 
+    private suspend fun awaitForegroundWorkReady() {
+        // Reassert the service for every model round. This is cheap when it is already running,
+        // and recovers when an OEM reclaimed it between a tool result and the next request.
+        ChatGenerationForegroundService.start(context)
+        if (!ChatGenerationForegroundService.awaitReady()) {
+            // Keep the operation usable on devices that reject FGS promotion, while making the
+            // degraded path explicit in logs. Normal interactive sends wait only until the
+            // service confirms startForeground() and wake-lock acquisition.
+            Log.w(TAG, "Chat foreground service was not ready before work started")
+        }
+    }
+
     /**
      * Manual compression can outlive the chat screen. Keep it on [AppScope] so removing the
      * activity from recents does not cancel an in-progress multi-pass compression request.
@@ -1730,7 +1875,7 @@ class ChatService(
         additionalPrompt: String,
         targetTokens: Int,
         isAuto: Boolean,
-    ): ConversationCompaction {
+    ): ConversationCompaction = withTimeout(COMPACTION_TOTAL_TIMEOUT_MS) {
         require(messagesToCompress.isNotEmpty()) { "No messages selected for compression" }
         require(rawTailStartIndex in 1..conversation.messageNodes.size) {
             "Invalid compaction boundary"
@@ -1750,11 +1895,25 @@ class ChatService(
         }
 
         val providerHandler = providerManager.getProviderByType(provider)
+        // In token-threshold mode the user has supplied an explicit request-size ceiling for
+        // this model family. Prefer it over missing/stale provider metadata. In percent mode we
+        // still use the model's advertised context, falling back to the planner's conservative
+        // default when a provider does not publish one.
+        val compressionContextLength = compactionContextLength(settings, model)
+        val hasExplicitCompressionContext = settings.autoCompactionThresholdMode ==
+            AutoCompactionThresholdMode.TOKENS
         val inputBudgetTokens = ContextCompactionPlanner.inputBudgetTokens(
-            contextLength = model.contextLength,
+            contextLength = compressionContextLength,
             targetTokens = targetTokens,
+            allowFullContext = hasExplicitCompressionContext,
         )
-        val mapInputBudgetTokens = ContextCompactionPlanner.mapInputBudgetTokens(inputBudgetTokens)
+        val mapInputBudgetTokens = ContextCompactionPlanner.mapInputBudgetTokens(
+            inputBudgetTokens = inputBudgetTokens,
+            allowLargeContext = hasExplicitCompressionContext,
+        )
+        val rawContextRetentionReport = ContextCompactionPlanner.rawContextRetentionReport(
+            conversation.currentMessages.drop(rawTailStartIndex)
+        )
         // Reserve roughly one third of the configured target for a deterministic ledger of
         // completed tool results. This remains in the request even if the model's prose summary
         // ignores a tool record.
@@ -1762,8 +1921,9 @@ class ChatService(
             messages = messagesToCompress,
             maxTokens = (targetTokens / 3).coerceAtLeast(1),
         )
-        val modelSummaryTargetTokens = (targetTokens - ContextCompactionPlanner.estimateTokens(toolDigest))
-            .coerceAtLeast(1)
+        // The deterministic tool digest is appended after the model response. It does not
+        // consume the model's output budget, so keep the configured prose target intact.
+        val modelSummaryTargetTokens = targetTokens.coerceAtLeast(1)
 
         suspend fun compressSources(
             sources: List<String>,
@@ -1774,6 +1934,15 @@ class ChatService(
                 // Put this before the editable prompt and the source material so it remains a
                 // top-level instruction even when a user wrote a minimal custom template.
                 append(ContextCompactionPlanner.requiredToolRetentionInstructions())
+                if (rawContextRetentionReport.isNotBlank()) {
+                    appendLine()
+                    appendLine()
+                    appendLine(
+                        "SCOPE NOTE: This request summarizes only a prefix of the conversation. " +
+                            "Completed tool calls remain verbatim after the generated summary. " +
+                            "Do not claim that the whole conversation has no tool calls."
+                    )
+                }
                 appendLine()
                 appendLine()
                 append(
@@ -1788,44 +1957,96 @@ class ChatService(
                 )
             }
 
-            val result = providerHandler.generateText(
-                providerSetting = provider,
-                messages = listOf(UIMessage.user(prompt)),
-                params = backgroundTextGenerationParams(model).copy(
-                    maxTokens = requestedTargetTokens,
-                ),
-            )
+            val result = withTimeout(COMPACTION_REQUEST_TIMEOUT_MS) {
+                providerHandler.generateText(
+                    providerSetting = provider,
+                    messages = listOf(UIMessage.user(prompt)),
+                    params = backgroundTextGenerationParams(model).copy(
+                        maxTokens = requestedTargetTokens,
+                    ),
+                )
+            }
 
             return result.choices.firstOrNull()?.message?.toText()?.trim()
                 ?.takeIf { it.isNotBlank() }
                 ?: throw IllegalStateException("Failed to generate compressed summary")
         }
 
-        // A map/reduce pass keeps every compression request below both the compression model's
-        // context window and the fixed map-request ceiling. Sequential requests deliberately
-        // avoid a rate-limit burst when a long conversation becomes dozens of chunks. The final
-        // pass always returns one summary.
-        var sourceGroups = ContextCompactionPlanner.partitionSources(
-            sources = messagesToCompress.map(ContextCompactionPlanner::sourceText),
+        // Ordinary compression is a map pass over a small number of large groups. The full
+        // source is used whenever it fits within a reasonable request count. Providers that omit
+        // context metadata can otherwise turn one large tool result into dozens of tiny serial
+        // requests, so switch to the bounded per-tool preview only for that pathological plan.
+        val fullSources = messagesToCompress.map(ContextCompactionPlanner::sourceText)
+        val fullSourceGroups = ContextCompactionPlanner.partitionSources(
+            sources = fullSources,
             maxInputTokens = mapInputBudgetTokens,
         )
+        var sourceGroups = fullSourceGroups
+        var usingMapPreviews = false
+        if (fullSourceGroups.size > MAX_FULL_CONTEXT_MAP_GROUPS) {
+            val previewSources = messagesToCompress.map(ContextCompactionPlanner::mapSourceText)
+            val previewGroups = ContextCompactionPlanner.partitionSources(
+                sources = previewSources,
+                maxInputTokens = mapInputBudgetTokens,
+            )
+            if (previewGroups.size < fullSourceGroups.size) {
+                sourceGroups = previewGroups
+                usingMapPreviews = true
+            }
+        }
         check(sourceGroups.isNotEmpty()) { "No usable messages selected for compression" }
+        Log.i(
+            TAG,
+            "Compaction plan: model=${model.modelId}, contextLimit=" +
+                "${compressionContextLength ?: "default"}, inputBudget=$mapInputBudgetTokens, " +
+                "fullGroups=${fullSourceGroups.size}, selectedGroups=${sourceGroups.size}, " +
+                "parallelism=$MAX_PARALLEL_COMPACTION_REQUESTS, mapPreviews=$usingMapPreviews",
+        )
+
+        suspend fun compressGroups(
+            groups: List<List<String>>,
+            requestedTargetTokens: Int,
+        ): List<String> = groups
+            .chunked(MAX_PARALLEL_COMPACTION_REQUESTS)
+            .flatMap { batch ->
+                coroutineScope {
+                    batch.map { group ->
+                        async(Dispatchers.IO) {
+                            compressSources(group, requestedTargetTokens)
+                        }
+                    }.awaitAll()
+                }
+            }
+
         var reductionPasses = 0
         var finalSummary: String? = null
         while (finalSummary == null) {
             val passTargetTokens = if (sourceGroups.size == 1) {
-                modelSummaryTargetTokens
+                modelSummaryTargetTokens.coerceAtMost(COMPACTION_MAX_REQUEST_OUTPUT_TOKENS)
             } else {
-                ContextCompactionPlanner.intermediateTargetTokens(
-                    finalTargetTokens = modelSummaryTargetTokens,
-                    inputBudgetTokens = mapInputBudgetTokens,
+                ContextCompactionPlanner.mapOutputTargetTokens(
+                    finalTargetTokens = ContextCompactionPlanner.intermediateTargetTokens(
+                        finalTargetTokens = modelSummaryTargetTokens,
+                        inputBudgetTokens = mapInputBudgetTokens,
+                    ),
+                    groupCount = sourceGroups.size,
+                    maxPerRequestTokens = COMPACTION_MAX_REQUEST_OUTPUT_TOKENS,
                 )
             }
-            val summaries = sourceGroups.map { group ->
-                compressSources(group, passTargetTokens)
-            }
-            if (summaries.size == 1) {
-                finalSummary = summaries.single()
+            Log.i(
+                TAG,
+                "Compaction pass ${reductionPasses + 1}: groups=${sourceGroups.size}, " +
+                    "targetTokens=$passTargetTokens",
+            )
+            val summaries = compressGroups(sourceGroups, passTargetTokens)
+            val combinedSummary = summaries.joinToString("\n\n")
+            if (
+                summaries.size == 1 ||
+                ContextCompactionPlanner.estimateTokens(combinedSummary) <= mapInputBudgetTokens
+            ) {
+                // Preserve group order. For the common two-group case this is the final result,
+                // so no extra reduce request is needed.
+                finalSummary = combinedSummary
                 continue
             }
 
@@ -1851,7 +2072,11 @@ class ChatService(
 
         val compaction = ConversationCompaction(
             conversationId = conversation.id,
-            summary = listOfNotNull(finalSummary, toolDigest.takeIf { it.isNotBlank() })
+            summary = listOfNotNull(
+                finalSummary,
+                toolDigest.takeIf { it.isNotBlank() },
+                rawContextRetentionReport.takeIf { it.isNotBlank() },
+            )
                 .joinToString("\n\n"),
             tailStartNodeId = conversation.messageNodes.getOrNull(rawTailStartIndex)?.id,
             sourceEndNodeId = conversation.messageNodes[rawTailStartIndex - 1].id,
@@ -1861,7 +2086,7 @@ class ChatService(
             createdAt = Instant.now(),
         )
         conversationRepo.upsertCompaction(compaction)
-        return compaction
+        compaction
     }
 
     // ---- 通知 ----
@@ -1877,6 +2102,27 @@ class ChatService(
         ) {
             title = senderName
             content = conversation.currentMessages.lastOrNull()?.toText()?.take(50)?.trim() ?: ""
+            autoCancel = true
+            useDefaults = true
+            category = NotificationCompat.CATEGORY_MESSAGE
+            contentIntent = getPendingIntent(context, conversationId)
+        }
+    }
+
+    private fun sendToolApprovalRequiredNotification(
+        conversationId: Uuid,
+        senderName: String,
+        pendingTool: UIMessagePart.Tool,
+    ) {
+        val toolName = pendingTool.toolName
+            .removePrefix("mcp__")
+            .substringAfter("__", missingDelimiterValue = pendingTool.toolName.removePrefix("mcp__"))
+        context.sendNotification(
+            channelId = CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID,
+            notificationId = 1,
+        ) {
+            title = senderName
+            content = "${context.getString(R.string.setting_mcp_page_needs_approval)}: $toolName"
             autoCancel = true
             useDefaults = true
             category = NotificationCompat.CATEGORY_MESSAGE
@@ -2056,10 +2302,75 @@ class ChatService(
         }
     }
 
+    private fun markStreamingPersistence(conversationId: Uuid) {
+        pendingStreamingPersistence[conversationId] = streamingPersistenceSequence.incrementAndGet()
+    }
+
+    /** Persist a stream snapshot at most twice per second while keeping the collector ordered. */
+    private suspend fun persistStreamingStateIfDue(conversationId: Uuid) {
+        val now = SystemClock.elapsedRealtime()
+        val last = lastStreamingPersistAt[conversationId]
+        if (last == null || now - last >= STREAMING_PERSIST_INTERVAL_MS) {
+            persistStreamingStateNow(conversationId)
+        }
+    }
+
+    /**
+     * Persist the newest in-memory state. The snapshot is read while the persistence mutex is
+     * held, so a user edit/approval racing with a stream flush cannot be overwritten by an older
+     * chunk. A failed write leaves the dirty marker in place for the next chunk or lifecycle flush.
+     */
+    private suspend fun persistStreamingStateNow(
+        conversationId: Uuid,
+        updateSearchIndex: Boolean = false,
+    ) {
+        val observedMarker = pendingStreamingPersistence[conversationId] ?: return
+        val persisted = runCatching {
+            persistenceMutexFor(conversationId).withLock {
+                persistConversationSnapshot(
+                    conversationId = conversationId,
+                    conversation = getConversationFlow(conversationId).value,
+                    updateSearchIndex = updateSearchIndex,
+                )
+            }
+        }.onFailure {
+            Log.w(TAG, "persistStreamingStateNow failed for $conversationId", it)
+        }.getOrDefault(false)
+
+        if (persisted) {
+            lastStreamingPersistAt[conversationId] = SystemClock.elapsedRealtime()
+            // Keep a marker that arrived while the transaction was running.
+            pendingStreamingPersistence.remove(conversationId, observedMarker)
+        }
+    }
+
+    private suspend fun flushStreamingPersistence() {
+        val ids = buildSet {
+            addAll(pendingStreamingPersistence.keys)
+            sessions.values
+                .filter { it.isGenerating }
+                .mapTo(this) { it.id }
+        }
+        ids.forEach { persistStreamingStateNow(it) }
+    }
+
     suspend fun saveConversation(conversationId: Uuid, conversation: Conversation) {
+        persistenceMutexFor(conversationId).withLock {
+            val updatedConversation = conversation.copy()
+            if (!persistConversationSnapshot(conversationId, updatedConversation)) return@withLock
+            updateConversation(conversationId, updatedConversation)
+        }
+    }
+
+    /** Room write shared by explicit saves and stream snapshots. Caller holds the persistence mutex. */
+    private suspend fun persistConversationSnapshot(
+        conversationId: Uuid,
+        conversation: Conversation,
+        updateSearchIndex: Boolean = true,
+    ): Boolean {
         val exists = conversationRepo.existsConversationById(conversation.id)
         if (!exists && conversation.title.isBlank() && conversation.messageNodes.isEmpty()) {
-            return // 新会话且为空时不保存
+            return false // 新会话且为空时不保存
         }
         // Refuse to overwrite a non-empty stored row with an empty in-memory snapshot.
         // This is the silent-data-loss guard: handleToolApproval / stopGeneration / etc.
@@ -2072,18 +2383,22 @@ class ChatService(
             }.getOrDefault(false)
             if (storedHasContent) {
                 Log.w(TAG, "saveConversation: refusing to overwrite non-empty $conversationId with empty snapshot — likely an unhydrated session")
-                return
+                return false
             }
         }
 
-        val updatedConversation = conversation.copy()
-        updateConversation(conversationId, updatedConversation)
-
         if (!exists) {
-            conversationRepo.insertConversation(updatedConversation)
+            conversationRepo.insertConversation(
+                conversation = conversation,
+                updateSearchIndex = updateSearchIndex,
+            )
         } else {
-            conversationRepo.updateConversation(updatedConversation)
+            conversationRepo.updateConversation(
+                conversation = conversation,
+                updateSearchIndex = updateSearchIndex,
+            )
         }
+        return true
     }
 
     // ---- 翻译消息 ----

@@ -211,6 +211,14 @@ private fun ResponseStreamRetrySettingItem(
                         value = maxRetries,
                         onValueChange = { value ->
                             maxRetries = value.filter(Char::isDigit).take(2)
+                            maxRetries.toIntOrNull()?.let { parsed ->
+                                val normalized = parsed.coerceIn(0, 10)
+                                if (normalized != settings.responseStreamMaxRetries) {
+                                    vm.updateSettings { current ->
+                                        current.copy(responseStreamMaxRetries = normalized)
+                                    }
+                                }
+                            }
                         },
                         singleLine = true,
                         label = {
@@ -225,10 +233,12 @@ private fun ResponseStreamRetrySettingItem(
                                         ?.coerceIn(0, 10)
                                         ?: settings.responseStreamMaxRetries
                                     maxRetries = normalized.toString()
-                                    if (normalized != settings.responseStreamMaxRetries) {
-                                        vm.updateSettings(
-                                            settings.copy(responseStreamMaxRetries = normalized)
-                                        )
+                                    vm.updateSettings { current ->
+                                        if (current.responseStreamMaxRetries == normalized) {
+                                            current
+                                        } else {
+                                            current.copy(responseStreamMaxRetries = normalized)
+                                        }
                                     }
                                 }
                             },
@@ -269,7 +279,7 @@ private fun AutoCompactionSettingItem(
                 Switch(
                     checked = settings.enableAutoCompaction,
                     onCheckedChange = {
-                        vm.updateSettings(settings.copy(enableAutoCompaction = it))
+                        vm.updateSettings { current -> current.copy(enableAutoCompaction = it) }
                     },
                 )
             },
@@ -295,7 +305,9 @@ private fun AutoCompactionSettingItem(
                                     selected = settings.autoCompactionThresholdMode == mode,
                                     onClick = {
                                         if (settings.autoCompactionThresholdMode != mode) {
-                                            vm.updateSettings(settings.copy(autoCompactionThresholdMode = mode))
+                                            vm.updateSettings { current ->
+                                                current.copy(autoCompactionThresholdMode = mode)
+                                            }
                                         }
                                     },
                                 ) {
@@ -315,11 +327,11 @@ private fun AutoCompactionSettingItem(
                                         threshold = (value / 5f).toInt().times(5).toFloat()
                                     },
                                     onValueChangeFinished = {
-                                        vm.updateSettings(
-                                            settings.copy(
+                                        vm.updateSettings { current ->
+                                            current.copy(
                                                 autoCompactionThresholdPercent = threshold.toInt()
                                             )
-                                        )
+                                        }
                                     },
                                     valueRange = 5f..95f,
                                     steps = 17,
@@ -332,6 +344,14 @@ private fun AutoCompactionSettingItem(
                                 value = tokenThreshold,
                                 onValueChange = { value ->
                                     tokenThreshold = value.filter(Char::isDigit).take(7)
+                                    tokenThreshold.toIntOrNull()?.let { parsed ->
+                                        val normalized = parsed.coerceIn(1, Int.MAX_VALUE / 1_000)
+                                        if (normalized != settings.autoCompactionThresholdTokensK) {
+                                            vm.updateSettings { current ->
+                                                current.copy(autoCompactionThresholdTokensK = normalized)
+                                            }
+                                        }
+                                    }
                                 },
                                 singleLine = true,
                                 suffix = { Text("k") },
@@ -353,9 +373,9 @@ private fun AutoCompactionSettingItem(
                                                 val normalized = parsed.coerceIn(1, Int.MAX_VALUE / 1_000)
                                                 tokenThreshold = normalized.toString()
                                                 if (normalized != settings.autoCompactionThresholdTokensK) {
-                                                    vm.updateSettings(
-                                                        settings.copy(autoCompactionThresholdTokensK = normalized)
-                                                    )
+                                                    vm.updateSettings { current ->
+                                                        current.copy(autoCompactionThresholdTokensK = normalized)
+                                                    }
                                                 }
                                             }
                                         }
@@ -374,6 +394,14 @@ private fun AutoCompactionSettingItem(
                         value = keepRecentToolCalls,
                         onValueChange = { value ->
                             keepRecentToolCalls = value.filter(Char::isDigit).take(4)
+                            keepRecentToolCalls.toIntOrNull()?.let { parsed ->
+                                val normalized = parsed.coerceIn(0, 1_000)
+                                if (normalized != settings.autoCompactionKeepRecentToolCalls) {
+                                    vm.updateSettings { current ->
+                                        current.copy(autoCompactionKeepRecentToolCalls = normalized)
+                                    }
+                                }
+                            }
                         },
                         singleLine = true,
                         supportingText = {
@@ -393,9 +421,9 @@ private fun AutoCompactionSettingItem(
                                         ?: settings.autoCompactionKeepRecentToolCalls
                                     keepRecentToolCalls = normalized.toString()
                                     if (normalized != settings.autoCompactionKeepRecentToolCalls) {
-                                        vm.updateSettings(
-                                            settings.copy(autoCompactionKeepRecentToolCalls = normalized)
-                                        )
+                                        vm.updateSettings { current ->
+                                            current.copy(autoCompactionKeepRecentToolCalls = normalized)
+                                        }
                                     }
                                 }
                             },
@@ -412,6 +440,13 @@ private fun AutoCompactionSettingItem(
                     value = compactionTargetTokensK,
                     onValueChange = { value ->
                         compactionTargetTokensK = value.filter(Char::isDigit).take(7)
+                        val normalized = compactionTargetTokensK.toIntOrNull()
+                            ?.coerceIn(1, Int.MAX_VALUE / 1_000)
+                        if (normalized != settings.contextCompactionTargetTokensK) {
+                            vm.updateSettings { current ->
+                                current.copy(contextCompactionTargetTokensK = normalized)
+                            }
+                        }
                     },
                     singleLine = true,
                     suffix = { Text("k") },
@@ -428,9 +463,9 @@ private fun AutoCompactionSettingItem(
                                 val normalizedValue = normalized?.toString().orEmpty()
                                 compactionTargetTokensK = normalizedValue
                                 if (normalized != settings.contextCompactionTargetTokensK) {
-                                    vm.updateSettings(
-                                        settings.copy(contextCompactionTargetTokensK = normalized)
-                                    )
+                                    vm.updateSettings { current ->
+                                        current.copy(contextCompactionTargetTokensK = normalized)
+                                    }
                                 }
                             }
                         },

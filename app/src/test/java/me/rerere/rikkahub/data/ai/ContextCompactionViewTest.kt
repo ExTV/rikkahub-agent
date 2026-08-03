@@ -1,11 +1,13 @@
 package me.rerere.rikkahub.data.ai
 
 import me.rerere.ai.ui.UIMessage
+import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.ConversationCompaction
 import me.rerere.rikkahub.data.model.MessageNode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
 import kotlin.uuid.Uuid
@@ -130,5 +132,50 @@ class ContextCompactionViewTest {
         assertEquals(listOf("one", "two", "updated three"), merged.currentMessages.map { it.toText() })
         assertSame(nodes[0], merged.messageNodes[0])
         assertSame(nodes[1], merged.messageNodes[1])
+    }
+
+    @Test
+    fun `message boundary compaction keeps all 55 raw tool results after summary`() {
+        val userNode = MessageNode(messages = listOf(UIMessage.user("research")))
+        val tools = (1..55).map { index ->
+            UIMessagePart.Tool(
+                toolCallId = "call-$index",
+                toolName = "search-$index",
+                input = "query-$index",
+                output = listOf(UIMessagePart.Text("result-$index")),
+            )
+        }
+        val toolNode = MessageNode(
+            messages = listOf(UIMessage(role = me.rerere.ai.core.MessageRole.ASSISTANT, parts = tools))
+        )
+        val conversation = Conversation(
+            assistantId = Uuid.random(),
+            messageNodes = listOf(userNode, toolNode),
+        )
+        val report = ContextCompactionPlanner.rawContextRetentionReport(
+            listOf(toolNode.currentMessage)
+        )
+        val compaction = ConversationCompaction(
+            conversationId = conversation.id,
+            summary = "summary of research request\n\n$report",
+            tailStartNodeId = toolNode.id,
+            sourceEndNodeId = userNode.id,
+            summaryModelId = Uuid.random(),
+            isAuto = true,
+            sourceTokenEstimate = 10_000,
+            createdAt = Instant.now(),
+        )
+
+        val view = ContextCompactionView.build(conversation, compaction)
+        val retainedTools = view.messages
+            .flatMap { it.parts }
+            .filterIsInstance<UIMessagePart.Tool>()
+
+        assertEquals(55, retainedTools.size)
+        (1..55).forEach { index ->
+            val retained = retainedTools.single { it.toolCallId == "call-$index" }
+            assertEquals("result-$index", (retained.output.single() as UIMessagePart.Text).text)
+        }
+        assertTrue(view.messages.first().toText().contains("completed_tool_calls=55"))
     }
 }

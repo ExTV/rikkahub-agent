@@ -2,6 +2,7 @@ package me.rerere.rikkahub.data.datastore.migration
 
 import android.util.Log
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import me.rerere.rikkahub.utils.JsonInstant
@@ -59,6 +60,13 @@ object SettingsJsonMigrator {
                     )
                     root["quickMessages"] = merged
                 }
+            }
+
+            // V4/V5: the previous migration encoded the old model-dependent default as 2k.
+            // Remove only that legacy value. A missing/null field means the new 1%-of-context
+            // default and must remain unset so it can adapt to the active model.
+            if (root["contextCompactionTargetTokensK"]?.toString() == "2") {
+                root["contextCompactionTargetTokensK"] = JsonNull
             }
 
             JsonInstant.encodeToString(JsonObject(root))

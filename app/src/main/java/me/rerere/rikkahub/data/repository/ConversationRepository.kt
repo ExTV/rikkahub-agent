@@ -320,17 +320,25 @@ class ConversationRepository(
         conversationCompactionDAO.deleteByConversationId(conversationId.toString())
     }
 
-    suspend fun insertConversation(conversation: Conversation) {
+    suspend fun insertConversation(
+        conversation: Conversation,
+        updateSearchIndex: Boolean = true,
+    ) {
         database.withTransaction {
             conversationDAO.insert(
                 conversationToConversationEntity(conversation)
             )
             saveMessageNodes(conversation.id.toString(), conversation.messageNodes)
         }
-        messageFtsManager.indexConversation(conversation)
+        if (updateSearchIndex) {
+            messageFtsManager.indexConversation(conversation)
+        }
     }
 
-    suspend fun updateConversation(conversation: Conversation) {
+    suspend fun updateConversation(
+        conversation: Conversation,
+        updateSearchIndex: Boolean = true,
+    ) {
         database.withTransaction {
             conversationDAO.update(
                 conversationToConversationEntity(conversation)
@@ -339,7 +347,9 @@ class ConversationRepository(
             messageNodeDAO.deleteByConversation(conversation.id.toString())
             saveMessageNodes(conversation.id.toString(), conversation.messageNodes)
         }
-        messageFtsManager.indexConversation(conversation)
+        if (updateSearchIndex) {
+            messageFtsManager.indexConversation(conversation)
+        }
     }
 
     suspend fun deleteConversation(conversation: Conversation) {
