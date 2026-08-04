@@ -1797,4 +1797,7 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="assistant_page_context_message_limit_count">上下文消息限制: %d</string>
   <string name="assistant_page_context_message_limit_unlimited">无限上下文消息</string>
   <string name="assistant_page_context_message_limit_warning">限制上下文会在每次上下文被修剪时使提示词缓存失效。更大的限制修剪频率更低；无限制则从不修剪，并保持缓存完全完好。</string>
+  <string name="assistant_page_max_steps_per_turn">单轮会话最大步骤数</string>
+  <string name="assistant_page_max_steps_per_turn_desc">设置单轮会话中模型/工具步骤的最大数量。输入 0 表示不限制步骤数量。其他安全限制仍然生效。</string>
+  <string name="assistant_page_max_steps_per_turn_supporting">0 = 不限制步骤</string>
 </resources>

@@ -1,5 +1,9 @@
 package me.rerere.rikkahub.data.datastore
 
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.utils.JsonInstant
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -38,5 +42,16 @@ class PreferencesStoreTest {
         val settings = Settings(contextCompactionTargetTokensK = 30)
 
         assertEquals(30_000, settings.getContextCompactionTargetTokens(372_000))
+    }
+
+    @Test
+    fun `assistant max steps round trips through persisted settings json`() {
+        val saved = Assistant(maxStepsPerTurn = 0)
+
+        val restored = JsonInstant.decodeFromString<Assistant>(
+            JsonInstant.encodeToString(saved)
+        )
+
+        assertEquals(0, restored.maxStepsPerTurn)
     }
 }

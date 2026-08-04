@@ -411,6 +411,39 @@ internal fun AssistantBasicContent(
             FormItem(
                 modifier = Modifier.padding(8.dp),
                 label = {
+                    Text(stringResource(R.string.assistant_page_max_steps_per_turn))
+                },
+                description = {
+                    Text(stringResource(R.string.assistant_page_max_steps_per_turn_desc))
+                }
+            ) {
+                var maxStepsInput by remember(assistant.id, assistant.maxStepsPerTurn) {
+                    mutableStateOf(assistant.maxStepsPerTurn.toString())
+                }
+                val maxStepsValue = maxStepsInput.toIntOrNull()
+                OutlinedTextField(
+                    value = maxStepsInput,
+                    onValueChange = { value ->
+                        maxStepsInput = value
+                        value.toIntOrNull()?.takeIf { it >= 0 }?.let { maxSteps ->
+                            vm.updateAssistant { current ->
+                                current.copy(maxStepsPerTurn = maxSteps)
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    isError = maxStepsValue == null || maxStepsValue < 0,
+                    supportingText = {
+                        Text(stringResource(R.string.assistant_page_max_steps_per_turn_supporting))
+                    }
+                )
+            }
+            HorizontalDivider()
+            FormItem(
+                modifier = Modifier.padding(8.dp),
+                label = {
                     Text(stringResource(R.string.assistant_page_stream_output))
                 },
                 description = {

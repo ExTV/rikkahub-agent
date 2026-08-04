@@ -61,4 +61,16 @@ class GenerationHandlerTurnBudgetTest {
         assertEquals(clamped, ToolRuntimeLimits.turnBudgetMs)
         assertEquals(TermuxDefaults.MAX_TURN_BUDGET_MS, ToolRuntimeLimits.turnBudgetMs)
     }
+
+    @Test
+    fun zeroStepLimit_allowsFurtherSteps() {
+        assertEquals(true, isGenerationStepAllowed(stepIndex = 10_000, maxSteps = 0))
+    }
+
+    @Test
+    fun positiveStepLimit_stopsAfterConfiguredSteps() {
+        assertEquals(true, isGenerationStepAllowed(stepIndex = 0, maxSteps = 32))
+        assertEquals(true, isGenerationStepAllowed(stepIndex = 31, maxSteps = 32))
+        assertEquals(false, isGenerationStepAllowed(stepIndex = 32, maxSteps = 32))
+    }
 }

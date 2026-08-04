@@ -1793,4 +1793,7 @@
   <string name="assistant_page_context_message_limit_count">Лимит сообщений контекста: %d</string>
   <string name="assistant_page_context_message_limit_unlimited">Неограниченные сообщения контекста</string>
   <string name="assistant_page_context_message_limit_warning">Ограничение контекста аннулирует кэш промпта каждый раз, когда контекст усекается. Больший лимит усекает реже; безлимитный не усекает никогда и сохраняет кэш полностью нетронутым.</string>
+  <string name="assistant_page_max_steps_per_turn">Максимум шагов за один ход</string>
+  <string name="assistant_page_max_steps_per_turn_desc">Задаёт максимальное число шагов модели/инструмента за один ход диалога. Введите 0, чтобы не ограничивать количество шагов. Другие ограничения безопасности продолжают действовать.</string>
+  <string name="assistant_page_max_steps_per_turn_supporting">0 = без ограничения шагов</string>
 </resources>

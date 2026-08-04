@@ -74,6 +74,14 @@ import kotlin.uuid.Uuid
 private const val TAG = "GenerationHandler"
 private const val MAX_TOOL_OUTPUT_CHARS = 32 * 1024
 private const val TOOL_OUTPUT_PREVIEW_CHARS = 4 * 1024
+
+/**
+ * Returns whether another model/tool step may start. A non-positive value disables only the
+ * step-count cap; the per-turn wall-clock budget and loop guard remain active safety limits.
+ */
+internal fun isGenerationStepAllowed(stepIndex: Int, maxSteps: Int): Boolean =
+    maxSteps <= 0 || stepIndex < maxSteps
+
 private const val GENERATION_STREAM_RETRY_INITIAL_DELAY_MS = 750L
 private const val GENERATION_STREAM_RETRY_MAX_DELAY_MS = 4_000L
 
@@ -400,7 +408,7 @@ class GenerationHandler(
         assistant: Assistant,
         memories: List<AssistantMemory>? = null,
         tools: List<Tool> = emptyList(),
-        maxSteps: Int = 32,
+        maxSteps: Int,
         processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
         // Called after a tool result has been emitted and persisted, before the next model
         // request is built. The callback may return a compacted request history; the returned
@@ -453,7 +461,8 @@ class GenerationHandler(
         val turnStartMs = android.os.SystemClock.elapsedRealtime()
         var loopGuardTripCount = 0
 
-        for (stepIndex in 0 until maxSteps) {
+        var stepIndex = 0
+        while (isGenerationStepAllowed(stepIndex, maxSteps)) {
             // Wall-clock cap: any single user turn that has been running longer than the
             // budget is force-ended, regardless of whether the model wants more steps.
             // This is the second line of defence after maxSteps; without it a model that
@@ -1000,6 +1009,8 @@ class GenerationHandler(
                 Log.i(TAG, "generateText: replacing request history after tool execution")
                 messages = compactedMessages
             }
+
+            stepIndex++
         }
 
     }

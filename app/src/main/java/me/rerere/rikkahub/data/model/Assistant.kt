@@ -26,6 +26,8 @@ data class Assistant(
     val topP: Float? = null,
     // 上下文消息条数上限, 超出后阶梯式截断; 0 表示不限制
     val contextMessageLimit: Int = 0,
+    // 单轮模型/工具循环的步骤上限; 0 表示不限制
+    val maxStepsPerTurn: Int = 32,
     val streamOutput: Boolean = true,
     val enableMemory: Boolean = false,
     val useGlobalMemory: Boolean = false, // 使用全局共享记忆而非助手隔离记忆

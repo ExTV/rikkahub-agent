@@ -1793,4 +1793,7 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="assistant_page_context_message_limit_count">コンテキストメッセージ制限: %d</string>
   <string name="assistant_page_context_message_limit_unlimited">コンテキストメッセージ無制限</string>
   <string name="assistant_page_context_message_limit_warning">コンテキストの制限は、コンテキストが切り詰められるたびにプロンプトキャッシュを無効化します。制限が大きいほど切り詰めの頻度が減り、無制限なら切り詰めが発生せず、キャッシュは完全に保持されます。</string>
+  <string name="assistant_page_max_steps_per_turn">1ターンあたりの最大ステップ数</string>
+  <string name="assistant_page_max_steps_per_turn_desc">1回の会話ターンで実行できるモデル/ツールステップの最大数を設定します。0を入力するとステップ数を制限しません。その他の安全上限は引き続き適用されます。</string>
+  <string name="assistant_page_max_steps_per_turn_supporting">0 = ステップ数無制限</string>
 </resources>

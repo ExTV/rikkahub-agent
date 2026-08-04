@@ -1793,4 +1793,7 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네�
   <string name="assistant_page_context_message_limit_count">컨텍스트 메시지 한도: %d</string>
   <string name="assistant_page_context_message_limit_unlimited">무제한 컨텍스트 메시지</string>
   <string name="assistant_page_context_message_limit_warning">컨텍스트 제한 시 컨텍스트가 정리될 때마다 프롬프트 캐시가 무효화됩니다. 제한이 클수록 정리 빈도가 낮아지며, 무제한일 경우 정리되지 않아 캐시가 완전히 보존됩니다.</string>
+  <string name="assistant_page_max_steps_per_turn">턴당 최대 단계 수</string>
+  <string name="assistant_page_max_steps_per_turn_desc">한 번의 대화 턴에서 모델/도구 단계의 최대 수를 설정합니다. 0을 입력하면 단계 수를 제한하지 않습니다. 다른 안전 제한은 계속 적용됩니다.</string>
+  <string name="assistant_page_max_steps_per_turn_supporting">0 = 단계 수 무제한</string>
 </resources>

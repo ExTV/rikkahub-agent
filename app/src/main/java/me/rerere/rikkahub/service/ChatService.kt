@@ -971,6 +971,7 @@ class ChatService(
             generationHandler.generateText(
                 settings = settings,
                 model = model,
+                maxSteps = assistant.maxStepsPerTurn,
                 processingStatus = session.processingStatus,
                 // Read once per call so the surface that wrote the addendum (Telegram bot,
                 // anything else) gets its runtime context into the system prompt without
