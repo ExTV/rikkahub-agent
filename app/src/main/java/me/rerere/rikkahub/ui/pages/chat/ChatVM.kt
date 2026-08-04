@@ -25,6 +25,7 @@ import me.rerere.ai.ui.isEmptyInputMessage
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
@@ -99,9 +100,9 @@ class ChatVM(
     val settings: StateFlow<Settings> =
         settingsStore.settingsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, Settings.dummy())
 
-    // 网络搜索
+    // 网络搜索(每个助手独立)
     val enableWebSearch = settings.map {
-        it.enableWebSearch
+        it.getCurrentAssistant().enableWebSearch
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     // 当前模型
@@ -123,8 +124,8 @@ class ChatVM(
     val mcpManager = chatService.mcpManager
 
     // 更新设置
-    fun updateSettings(newSettings: Settings) {
-        viewModelScope.launch {
+    fun updateSettings(newSettings: Settings): Job {
+        return viewModelScope.launch {
             val oldSettings = settings.value
             // 检查用户头像是否有变化，如果有则删除旧头像
             checkUserAvatarDelete(oldSettings, newSettings)
@@ -263,11 +264,10 @@ class ChatVM(
         }
     }
 
-    fun deleteConversation(conversation: Conversation) {
+    fun deleteConversation(conversation: Conversation): Job =
         viewModelScope.launch {
             conversationRepo.deleteConversation(conversation)
         }
-    }
 
     fun updatePinnedStatus(conversation: Conversation) {
         viewModelScope.launch {

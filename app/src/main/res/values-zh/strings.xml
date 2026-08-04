@@ -1792,4 +1792,9 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="setting_model_page_response_stream_retries">Response API 流重试次数</string>
   <string name="setting_model_page_response_stream_retries_desc">Response API 流在完成前意外关闭时，自动重试请求此次数。设为 0 可禁用自动重试。</string>
   <string name="setting_model_page_response_stream_retries_input">最大重试次数</string>
+  <string name="assistant_page_context_message_limit">上下文消息限制</string>
+  <string name="assistant_page_context_message_limit_desc">限制发送给模型的最近消息数量。超出限制时，上下文会一次性缩减至约一半，而非每轮丢弃一条消息，从而保持请求前缀稳定，并使提示词缓存在多轮对话中持续生效。</string>
+  <string name="assistant_page_context_message_limit_count">上下文消息限制: %d</string>
+  <string name="assistant_page_context_message_limit_unlimited">无限上下文消息</string>
+  <string name="assistant_page_context_message_limit_warning">限制上下文会在每次上下文被修剪时使提示词缓存失效。更大的限制修剪频率更低；无限制则从不修剪，并保持缓存完全完好。</string>
 </resources>

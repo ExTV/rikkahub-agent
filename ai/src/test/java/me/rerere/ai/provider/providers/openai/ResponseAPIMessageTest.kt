@@ -6,8 +6,11 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
+import me.rerere.ai.core.Tool
+import me.rerere.ai.provider.BuiltInTools
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.ProviderSetting
@@ -511,7 +514,75 @@ class ResponseAPIMessageTest {
         )
     }
 
+    @Test
+    fun `function tools and built-in tools should coexist in the same tools array`() {
+        val requestBody = invokeBuildRequestBody(
+            providerSetting = ProviderSetting.OpenAI(baseUrl = "https://api.openai.com/v1"),
+            messages = listOf(UIMessage.user("hello")),
+            params = createToolParams(
+                tools = listOf(createFunctionTool("get_weather")),
+                builtInTools = setOf(BuiltInTools.Search),
+            ),
+        )
+
+        val tools = requestBody["tools"]?.jsonArray
+        assertTrue("tools should exist", tools != null)
+        val types = tools!!.map { it.jsonObject["type"]?.jsonPrimitive?.content }
+        assertTrue("function tool should not be dropped", types.contains("function"))
+        assertTrue("built-in web_search should be present", types.contains("web_search"))
+        assertEquals(2, tools.size)
+    }
+
+    @Test
+    fun `function tools should be sent when no built-in tools configured`() {
+        val requestBody = invokeBuildRequestBody(
+            providerSetting = ProviderSetting.OpenAI(baseUrl = "https://api.openai.com/v1"),
+            messages = listOf(UIMessage.user("hello")),
+            params = createToolParams(tools = listOf(createFunctionTool("get_weather"))),
+        )
+
+        val tools = requestBody["tools"]?.jsonArray
+        assertEquals(1, tools?.size)
+        assertEquals("function", tools!![0].jsonObject["type"]?.jsonPrimitive?.content)
+        assertEquals("get_weather", tools[0].jsonObject["name"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `tools key should be absent when neither function nor built-in tools exist`() {
+        val requestBody = invokeBuildRequestBody(
+            providerSetting = ProviderSetting.OpenAI(baseUrl = "https://api.openai.com/v1"),
+            messages = listOf(UIMessage.user("hello")),
+            params = createToolParams(),
+        )
+
+        assertFalse("tools key should not be written", requestBody.containsKey("tools"))
+    }
+
     // ==================== Helper Functions ====================
+
+    private fun createToolParams(
+        tools: List<Tool> = emptyList(),
+        builtInTools: Set<BuiltInTools> = emptySet(),
+    ): TextGenerationParams {
+        return TextGenerationParams(
+            model = Model(
+                modelId = "test-model",
+                displayName = "test-model",
+                abilities = listOf(ModelAbility.TOOL),
+                tools = builtInTools,
+            ),
+            tools = tools,
+        )
+    }
+
+    private fun createFunctionTool(name: String): Tool {
+        return Tool(
+            name = name,
+            description = "test tool",
+            parameters = { InputSchema.Obj(properties = JsonObject(emptyMap())) },
+            execute = { emptyList() },
+        )
+    }
 
     private fun createExecutedTool(
         callId: String,

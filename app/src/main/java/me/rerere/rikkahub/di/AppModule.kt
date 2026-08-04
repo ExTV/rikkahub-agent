@@ -1,7 +1,9 @@
 package me.rerere.rikkahub.di
 
+import com.google.firebase.Firebase
+import com.google.firebase.analytics.analytics
+import com.google.firebase.crashlytics.crashlytics
 import kotlinx.serialization.json.Json
-import me.rerere.highlight.Highlighter
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.AILoggingManager
 import me.rerere.rikkahub.data.ai.tools.LocalTools
@@ -28,10 +30,6 @@ import org.koin.dsl.module
 
 val appModule = module {
     single<Json> { JsonInstant }
-
-    single {
-        Highlighter(get())
-    }
 
     single {
         AppEventBus()
@@ -215,6 +213,14 @@ val appModule = module {
 
     single {
         TTSManager(get())
+    }
+
+    single {
+        Firebase.crashlytics
+    }
+
+    single {
+        Firebase.analytics
     }
 
     single {

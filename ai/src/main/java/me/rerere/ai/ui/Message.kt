@@ -3,16 +3,13 @@ package me.rerere.ai.ui
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.provider.Model
 import me.rerere.ai.util.json
+import kotlin.math.roundToInt
 import kotlin.time.Clock
-import kotlin.time.Instant
 import kotlin.uuid.Uuid
 
 // 公共消息抽象, 具体的Provider实现会转换为API接口需要的DTO
@@ -269,13 +266,49 @@ fun List<UIMessagePart>.isEmptyUIMessage(): Boolean {
     }
 }
 
-fun List<UIMessage>.limitContext(size: Int): List<UIMessage> {
-    if (size <= 0 || this.size <= size) return this
+/**
+ * 截断后保留的消息条数占上限的比例
+ *
+ * 越小则截断点前进的步幅越大, 连续命中缓存的轮数越多, 但一次丢弃的上下文也越多
+ */
+private const val CONTEXT_KEEP_RATIO = 0.5f
 
-    val startIndex = this.size - size
+/**
+ * 按阶梯式(滞回)策略限制上下文消息数量
+ *
+ * 与每轮平移一条的滑动窗口不同, 截断点只在消息数越过 [limit] 时才前进一大步,
+ * 在此之后的连续多轮里保持不动, 使请求前缀保持稳定, 从而命中提示词缓存。
+ * 截断点仅由消息条数推导, 不需要额外持久化状态, 且对追加消息天然稳定。
+ *
+ * 保留的条数始终落在 `[limit * CONTEXT_KEEP_RATIO, limit)` 区间内。
+ *
+ * @param limit 触发截断的消息条数上限, 小于等于 0 表示不限制
+ */
+fun List<UIMessage>.limitContext(limit: Int): List<UIMessage> {
+    if (limit <= 0 || this.size <= limit) return this
+
+    // 截断后回落到的目标条数, 以及两次截断之间截断点前进的步幅
+    // limit 为 1 时无法构造滞回(步幅至少为 1), 此时退化为逐条平移的滑动窗口
+    val target = (limit * CONTEXT_KEEP_RATIO).roundToInt().coerceIn(1, limit)
+    val stride = (limit - target).coerceAtLeast(1)
+
+    // 每越过一级台阶, 截断点前进 stride 条; 台阶之内截断点不动
+    // 上界兜底保证至少保留一条消息, 正常路径(limit >= 2)不会触发
+    val startIndex = (((this.size - limit) / stride + 1) * stride).coerceAtMost(this.size - 1)
+
+    return this.subList(alignContextStart(startIndex), this.size)
+}
+
+/**
+ * 将截断起点回退到安全边界, 避免把 tool call 与其结果拆散, 或让上下文从半截的工具调用开始
+ *
+ * 只会向前(下标减小)调整, 因此不会破坏 [limitContext] 保留条数的下界。
+ * 调整只依赖 `[0, startIndex]` 区间内的消息, 这部分在追加新消息时不会变化, 结果因此保持稳定。
+ */
+private fun List<UIMessage>.alignContextStart(startIndex: Int): Int {
     var adjustedStartIndex = startIndex
 
-    // 循环往前查找，直到满足所有依赖条件
+    // 循环往前查找, 直到满足所有依赖条件
     var needsAdjustment = true
     val visitedIndices = mutableSetOf<Int>()
 
@@ -311,189 +344,7 @@ fun List<UIMessage>.limitContext(size: Int): List<UIMessage> {
         }
     }
 
-    return this.subList(adjustedStartIndex, this.size)
-}
-
-@Serializable
-sealed class ToolApprovalState {
-    @Serializable
-    @SerialName("auto")
-    data object Auto : ToolApprovalState()
-
-    @Serializable
-    @SerialName("pending")
-    data object Pending : ToolApprovalState()
-
-    @Serializable
-    @SerialName("approved")
-    data object Approved : ToolApprovalState()
-
-    @Serializable
-    @SerialName("denied")
-    data class Denied(val reason: String = "") : ToolApprovalState()
-
-    @Serializable
-    @SerialName("answered")
-    data class Answered(val answer: String) : ToolApprovalState()
-}
-
-fun ToolApprovalState.canResumeToolExecution(): Boolean {
-    return when (this) {
-        ToolApprovalState.Approved -> true
-        is ToolApprovalState.Denied -> true
-        is ToolApprovalState.Answered -> true
-        ToolApprovalState.Auto,
-        ToolApprovalState.Pending,
-            -> false
-    }
-}
-
-@Serializable
-sealed class UIMessagePart {
-    abstract val metadata: JsonObject?
-
-    @Serializable
-    @SerialName("text")
-    data class Text(
-        val text: String,
-        override var metadata: JsonObject? = null
-    ) : UIMessagePart()
-
-    @Serializable
-    @SerialName("image")
-    data class Image(
-        val url: String,
-        override var metadata: JsonObject? = null
-    ) : UIMessagePart()
-
-    @Serializable
-    @SerialName("video")
-    data class Video(
-        val url: String,
-        override var metadata: JsonObject? = null
-    ) : UIMessagePart()
-
-    @Serializable
-    @SerialName("audio")
-    data class Audio(
-        val url: String,
-        override var metadata: JsonObject? = null
-    ) : UIMessagePart()
-
-    @Serializable
-    @SerialName("document")
-    data class Document(
-        val url: String,
-        val fileName: String,
-        val mime: String = "text/*",
-        override var metadata: JsonObject? = null
-    ) : UIMessagePart()
-
-    @Serializable
-    @SerialName("reasoning")
-    data class Reasoning(
-        val reasoning: String,
-        val createdAt: Instant = Clock.System.now(),
-        val finishedAt: Instant? = Clock.System.now(),
-        override var metadata: JsonObject? = null
-    ) : UIMessagePart()
-
-    @Deprecated("Deprecated")
-    @Serializable
-    @SerialName("search")
-    data object Search : UIMessagePart() {
-        override var metadata: JsonObject? = null
-    }
-
-    @Deprecated("Use UIMessagePart.Tool instead")
-    @Serializable
-    @SerialName("tool_call")
-    data class ToolCall(
-        val toolCallId: String,
-        val toolName: String,
-        val arguments: String,
-        val approvalState: ToolApprovalState = ToolApprovalState.Auto,
-        override var metadata: JsonObject? = null
-    ) : UIMessagePart() {
-        @Suppress("DEPRECATION")  // self-reference inside a deprecated class is unavoidable
-        fun merge(other: ToolCall): ToolCall {
-            return ToolCall(
-                toolCallId = toolCallId,
-                toolName = toolName + other.toolName,
-                arguments = arguments + other.arguments,
-                approvalState = approvalState,
-                metadata = if (other.metadata != null) other.metadata else metadata,
-            )
-        }
-    }
-
-    @Deprecated("Use UIMessagePart.Tool instead")
-    @Serializable
-    @SerialName("tool_result")
-    data class ToolResult(
-        val toolCallId: String,
-        val toolName: String,
-        val content: JsonElement,
-        val arguments: JsonElement,
-        override var metadata: JsonObject? = null
-    ) : UIMessagePart()
-
-    @Serializable
-    @SerialName("tool")
-    data class Tool(
-        val toolCallId: String,
-        val toolName: String,
-        val input: String,
-        val output: List<UIMessagePart> = emptyList(),
-        val approvalState: ToolApprovalState = ToolApprovalState.Auto,
-        /**
-         * Unix-millisecond timestamp set by [GenerationHandler] right before it actually
-         * starts running the tool's `execute` body. Persisted before execution begins so
-         * that on a process kill mid-execute, the post-restart replay can detect that a
-         * previous attempt started but didn't complete (output is empty + this is set)
-         * and refuse to silently re-run the tool — re-running could double-charge a
-         * remote, double-send a message, or duplicate any other side effect. Null means
-         * "never started" (Approved-but-not-yet-tried).
-         */
-        val executionStartedAt: Long? = null,
-        override var metadata: JsonObject? = null
-    ) : UIMessagePart() {
-        /** Whether the tool has been executed (has output) */
-        val isExecuted: Boolean get() = output.isNotEmpty()
-
-        /** Whether the tool is pending user approval */
-        val isPending: Boolean get() = approvalState is ToolApprovalState.Pending
-
-        /** Whether generation can resume and handle this tool immediately */
-        val canResumeExecution: Boolean get() = !isExecuted && approvalState.canResumeToolExecution()
-
-        /**
-         * True iff a previous execution attempt was interrupted: approvalState is Approved,
-         * output is empty, and executionStartedAt is set. The resume path uses this to
-         * synthesise a "we don't know whether the side effect happened" Denied envelope
-         * instead of re-running.
-         */
-        val isInterruptedAttempt: Boolean
-            get() = approvalState is ToolApprovalState.Approved &&
-                output.isEmpty() && executionStartedAt != null
-
-        /** Parse input string as JsonElement */
-        fun inputAsJson(): JsonElement = runCatching {
-            json.parseToJsonElement(input.ifBlank { "{}" })
-        }.getOrElse { JsonObject(emptyMap()) }
-
-        fun merge(other: Tool): Tool {
-            return Tool(
-                toolCallId = toolCallId,
-                toolName = toolName + other.toolName,
-                input = input + other.input,
-                output = output + other.output,
-                approvalState = approvalState,
-                executionStartedAt = executionStartedAt ?: other.executionStartedAt,
-                metadata = if (other.metadata != null) other.metadata else metadata,
-            )
-        }
-    }
+    return adjustedStartIndex
 }
 
 /**
@@ -510,7 +361,6 @@ sealed class UIMessagePart {
     message = "Only use for migration. May break semantic order for messages with multiple Reasoning/Text parts.",
     level = DeprecationLevel.WARNING
 )
-@Suppress("DEPRECATION")  // when must enumerate deprecated UIMessagePart variants for exhaustiveness
 fun List<UIMessagePart>.toSortedMessageParts(): List<UIMessagePart> {
     // Skip sorting if multiple Reasoning or Text parts exist to preserve semantic order
     val reasoningCount = count { it is UIMessagePart.Reasoning }
@@ -558,17 +408,7 @@ fun UIMessage.finishPendingTools(
     transform: (UIMessagePart.Tool) -> UIMessagePart.Tool
 ): UIMessage {
     val updatedParts = parts.map { part ->
-        // Skip tools whose approvalState is ALREADY in a terminal state (Denied, Answered)
-        // even though `!isExecuted` is true. Without this skip, a hardline-blocked tool
-        // (Denied with empty output, set by GenerationHandler at hardline-check time)
-        // gets its reason overwritten with "Generation cancelled by user" — losing the
-        // safety-floor explanation. Approved+empty stays cancellable: it represents an
-        // approval the user granted but the tool never finished executing, so `/stop`
-        // should still flip it to Denied("cancelled by user").
-        if (part is UIMessagePart.Tool && !part.isExecuted &&
-            part.approvalState !is ToolApprovalState.Denied &&
-            part.approvalState !is ToolApprovalState.Answered
-        ) {
+        if (part is UIMessagePart.Tool && !part.isExecuted) {
             transform(part)
         } else {
             part
@@ -797,16 +637,6 @@ fun <T> List<T>.migrateToolNodes(
     }
 
     return result
-}
-
-@Serializable
-sealed class UIMessageAnnotation {
-    @Serializable
-    @SerialName("url_citation")
-    data class UrlCitation(
-        val title: String,
-        val url: String
-    ) : UIMessageAnnotation()
 }
 
 @Serializable

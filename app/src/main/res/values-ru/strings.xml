@@ -1788,4 +1788,9 @@
   <string name="setting_model_page_response_stream_retries">Повторные попытки потока Response API</string>
   <string name="setting_model_page_response_stream_retries_desc">Если поток Response API закрывается до завершения, повторить запрос указанное число раз. Установите 0, чтобы отключить автоматические повторы.</string>
   <string name="setting_model_page_response_stream_retries_input">Максимальное число повторов</string>
+  <string name="assistant_page_context_message_limit">Лимит контекстных сообщений</string>
+  <string name="assistant_page_context_message_limit_desc">Ограничивает количество последних сообщений, отправляемых модели. Когда лимит превышен, контекст сокращается примерно вдвое за один шаг, вместо удаления одного сообщения за каждый оборот, благодаря чему префикс запроса остаётся стабильным, и кэширование промптов продолжает работать на протяжении многих оборотов.</string>
+  <string name="assistant_page_context_message_limit_count">Лимит сообщений контекста: %d</string>
+  <string name="assistant_page_context_message_limit_unlimited">Неограниченные сообщения контекста</string>
+  <string name="assistant_page_context_message_limit_warning">Ограничение контекста аннулирует кэш промпта каждый раз, когда контекст усекается. Больший лимит усекает реже; безлимитный не усекает никогда и сохраняет кэш полностью нетронутым.</string>
 </resources>
