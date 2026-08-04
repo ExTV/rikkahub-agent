@@ -58,8 +58,8 @@ import coil3.svg.SvgDecoder
 import com.dokar.sonner.Toaster
 import com.dokar.sonner.rememberToasterState
 import kotlinx.serialization.Serializable
-import me.rerere.highlight.Highlighter
-import me.rerere.highlight.LocalHighlighter
+import me.rerere.highlight.CodeHighlighter
+import me.rerere.highlight.LocalCodeHighlighter
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.DEFAULT_CODEX_PROVIDER_ID
 import me.rerere.rikkahub.data.db.DatabaseMigrationTracker
@@ -98,6 +98,7 @@ import me.rerere.rikkahub.ui.pages.extensions.QuickMessagesPage
 import me.rerere.rikkahub.ui.pages.extensions.skills.SkillDetailPage
 import me.rerere.rikkahub.ui.pages.extensions.skills.SkillsPage
 import me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceDetailPage
+import me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceFileEditorPage
 import me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspacePage
 import me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceTerminalPage
 import me.rerere.rikkahub.ui.pages.favorite.FavoritePage
@@ -135,6 +136,7 @@ import me.rerere.rikkahub.ui.pages.webview.WebViewPage
 import me.rerere.rikkahub.ui.theme.LocalDarkMode
 import me.rerere.rikkahub.ui.theme.RikkahubTheme
 import me.rerere.rikkahub.utils.CrashHandler
+import me.rerere.workspace.WorkspaceStorageArea
 import okhttp3.OkHttpClient
 import org.koin.android.ext.android.inject
 import org.koin.compose.koinInject
@@ -147,7 +149,7 @@ class RouteActivity : ComponentActivity() {
         const val EXTRA_OPEN_CODEX_SETTINGS = "open_codex_settings"
     }
 
-    private val highlighter by inject<Highlighter>()
+    private val highlighter by inject<CodeHighlighter>()
     private val okHttpClient by inject<OkHttpClient>()
     private val settingsStore by inject<SettingsStore>()
     private var navStack: MutableList<NavKey>? = null
@@ -298,7 +300,7 @@ class RouteActivity : ComponentActivity() {
                 LocalNavController provides Navigator(backStack),
                 LocalSharedTransitionScope provides this,
                 LocalSettings provides settings,
-                LocalHighlighter provides highlighter,
+                LocalCodeHighlighter provides highlighter,
                 LocalToaster provides toastState,
                 LocalTTSState provides tts,
                 LocalASRState provides asr,
@@ -585,6 +587,14 @@ class RouteActivity : ComponentActivity() {
                                 WorkspaceTerminalPage(key.id)
                             }
 
+                            entry<Screen.WorkspaceFileEditor> { key ->
+                                WorkspaceFileEditorPage(
+                                    key.id,
+                                    WorkspaceStorageArea.valueOf(key.area),
+                                    key.path,
+                                )
+                            }
+
                             entry<Screen.SkillDetail> { key ->
                                 SkillDetailPage(skillName = key.skillName)
                             }
@@ -826,6 +836,13 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data class WorkspaceTerminal(val id: String) : Screen
+
+    @Serializable
+    data class WorkspaceFileEditor(
+        val id: String,
+        val area: String,
+        val path: String,
+    ) : Screen
 
     @Serializable
     data class SkillDetail(val skillName: String) : Screen

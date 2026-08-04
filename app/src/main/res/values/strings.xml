@@ -1894,6 +1894,16 @@
   <string name="setting_model_page_response_stream_retries">Response stream retries</string>
   <string name="setting_model_page_response_stream_retries_desc">When a Response API stream closes before completion, retry the request this many times. Set 0 to disable automatic retries.</string>
   <string name="setting_model_page_response_stream_retries_input">Maximum retry count</string>
+  <string name="setting_files_page_clean_action">Clean</string>
+  <string name="setting_files_page_clean_confirmation">All files in this category will be permanently deleted. This action cannot be undone.</string>
+  <string name="setting_files_page_clean_content_description">Clean files</string>
+  <string name="setting_files_page_clean_failed_toast">Some files could not be cleaned</string>
+  <string name="setting_files_page_clean_title">Clean files?</string>
+  <string name="setting_files_page_cleaned_toast">Files cleaned</string>
+  <string name="setting_tts_page_default_playback_speed">Default playback speed</string>
+  <string name="setting_tts_page_default_playback_speed_description">Applied locally to every TTS provider without changing its synthesis settings.</string>
+  <string name="theme_name_claude">Claude</string>
+  <string name="theme_name_minimal">Minimal White</string>
   <string name="assistant_page_context_message_limit">Context Message Limit</string>
   <string name="assistant_page_context_message_limit_desc">Caps how many recent messages are sent to the model. When the limit is exceeded, the context is trimmed down to about half in one step instead of dropping one message per turn, so the request prefix stays stable and prompt caching keeps working for many turns.</string>
   <string name="assistant_page_context_message_limit_count">Context message limit: %d</string>
