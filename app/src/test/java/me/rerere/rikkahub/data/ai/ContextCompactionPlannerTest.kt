@@ -354,6 +354,115 @@ class ContextCompactionPlannerTest {
         )
     }
 
+    @Test
+    fun `automatic tail within the token budget is returned unchanged`() {
+        val messages = listOf(
+            UIMessage.user("old context"),
+            toolMessage("first"),
+            toolMessage("second"),
+            UIMessage.user("follow up"),
+            toolMessage("third"),
+        )
+        val baseline = ContextCompactionPlanner.automaticTailStartIndex(
+            messages = messages,
+            rawTailStartIndex = 0,
+            keepRecentToolCalls = 2,
+        )
+        val tailTokens = ContextBudgetPlanner.estimateContextTokens(
+            messages.subList(baseline, messages.size),
+        )
+
+        assertEquals(
+            baseline,
+            ContextCompactionPlanner.automaticTailStartIndex(
+                messages = messages,
+                rawTailStartIndex = 0,
+                keepRecentToolCalls = 2,
+                maxTailTokens = tailTokens,
+            ),
+        )
+    }
+
+    @Test
+    fun `automatic tail over the token budget advances the boundary until it fits`() {
+        val messages = listOf(
+            UIMessage.user("old context"),
+            toolMessage("first"),
+            toolMessage("second"),
+            UIMessage.user("follow up"),
+            toolMessage("third"),
+        )
+        val baseline = ContextCompactionPlanner.automaticTailStartIndex(
+            messages = messages,
+            rawTailStartIndex = 0,
+            keepRecentToolCalls = 2,
+        )
+        val tailTokens = ContextBudgetPlanner.estimateContextTokens(
+            messages.subList(baseline, messages.size),
+        )
+
+        val widened = ContextCompactionPlanner.automaticTailStartIndex(
+            messages = messages,
+            rawTailStartIndex = 0,
+            keepRecentToolCalls = 2,
+            maxTailTokens = tailTokens - 1,
+        )
+
+        assertTrue(widened > baseline)
+        assertTrue(
+            widened == messages.size ||
+                ContextBudgetPlanner.estimateContextTokens(messages.subList(widened, messages.size)) <=
+                tailTokens - 1,
+        )
+    }
+
+    @Test
+    fun `automatic tail with maxTailTokens null reproduces the current result exactly`() {
+        val messages = listOf(
+            UIMessage.user("old context"),
+            toolMessage("first"),
+            toolMessage("second"),
+            UIMessage.user("follow up"),
+            toolMessage("third"),
+        )
+
+        assertEquals(
+            ContextCompactionPlanner.automaticTailStartIndex(
+                messages = messages,
+                rawTailStartIndex = 0,
+                keepRecentToolCalls = 2,
+            ),
+            ContextCompactionPlanner.automaticTailStartIndex(
+                messages = messages,
+                rawTailStartIndex = 0,
+                keepRecentToolCalls = 2,
+                maxTailTokens = null,
+            ),
+        )
+    }
+
+    @Test
+    fun `automatic tail never regresses to or below rawTailStartIndex under a tiny budget`() {
+        val messages = listOf(
+            UIMessage.user("old"),
+            toolMessage("first"),
+            toolMessage("second"),
+            UIMessage.user("follow up"),
+            toolMessage("third"),
+            toolMessage("fourth"),
+        )
+        val rawTailStartIndex = 1
+
+        val widened = ContextCompactionPlanner.automaticTailStartIndex(
+            messages = messages,
+            rawTailStartIndex = rawTailStartIndex,
+            keepRecentToolCalls = 2,
+            maxTailTokens = 1,
+        )
+
+        assertTrue(widened > rawTailStartIndex)
+    }
+
     private fun toolMessage(name: String) = UIMessage(
         role = MessageRole.ASSISTANT,
         parts = listOf(

@@ -4,10 +4,16 @@ import kotlinx.datetime.LocalDateTime
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.ContextCompactionView
+import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.ConversationCompaction
+import me.rerere.rikkahub.data.model.MessageNode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.Instant
+import kotlin.uuid.Uuid
 
 /**
  * Coverage for [applyTimeReminder].
@@ -132,5 +138,31 @@ class TimeReminderTransformerTest {
     fun `empty messages return empty`() {
         val result = applyTimeReminder(emptyList())
         assertEquals(0, result.size)
+    }
+
+    @Test
+    fun `applying the time reminder over the compacted view is identical across two builds`() {
+        val nodes = listOf("one", "two", "three").map { text ->
+            MessageNode(messages = listOf(UIMessage.user(text)))
+        }
+        val conversation = Conversation(
+            assistantId = Uuid.random(),
+            messageNodes = nodes,
+        )
+        val compaction = ConversationCompaction(
+            conversationId = conversation.id,
+            summary = "summary of one",
+            tailStartNodeId = nodes[1].id,
+            sourceEndNodeId = nodes[0].id,
+            summaryModelId = Uuid.random(),
+            isAuto = true,
+            sourceTokenEstimate = 100,
+            createdAt = Instant.now(),
+        )
+
+        val firstResult = applyTimeReminder(ContextCompactionView.build(conversation, compaction).messages)
+        val secondResult = applyTimeReminder(ContextCompactionView.build(conversation, compaction).messages)
+
+        assertEquals(firstResult.map { getMessageText(it) }, secondResult.map { getMessageText(it) })
     }
 }

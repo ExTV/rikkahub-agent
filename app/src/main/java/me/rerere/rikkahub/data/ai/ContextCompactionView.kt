@@ -1,10 +1,13 @@
 package me.rerere.rikkahub.data.ai
 
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 import me.rerere.ai.ui.UIMessage
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.ConversationCompaction
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.data.model.toMessageNode
+import kotlin.time.toKotlinInstant
 import kotlin.uuid.Uuid
 
 data class CompactedMessageView(
@@ -16,6 +19,23 @@ data class CompactedMessageView(
 )
 
 object ContextCompactionView {
+    /**
+     * Builds the synthetic summary message with an identity stable across every request built
+     * from the same [compaction], instead of the fresh random id / wall-clock createdAt that
+     * `UIMessage.user()` defaults to. `TimeReminderTransformer` injects a time reminder before
+     * the first user message of a request; with a per-request identity here, that first message
+     * - and so the whole request prefix - would change on every request, defeating provider
+     * prompt caching after compaction (RC3).
+     */
+    internal fun summaryMessage(compaction: ConversationCompaction): UIMessage =
+        UIMessage.user(compaction.summary).copy(
+            createdAt = compaction.createdAt.toKotlinInstant()
+                .toLocalDateTime(TimeZone.currentSystemDefault()),
+            // sourceEndNodeId is a MessageNode id, never a message id, so reusing it as this
+            // synthetic message's id cannot collide with a real message's id.
+            id = compaction.sourceEndNodeId,
+        )
+
     fun build(
         conversation: Conversation,
         compaction: ConversationCompaction?,
@@ -42,11 +62,36 @@ object ContextCompactionView {
 
         return CompactedMessageView(
             messages = ContextCompactionPresentation.stripDisplayTools(
-                listOf(UIMessage.user(compaction.summary)) +
+                listOf(summaryMessage(compaction)) +
                     conversation.currentMessages.drop(tailStartIndex),
             ),
             compaction = compaction,
             rawTailStartIndex = tailStartIndex,
+        )
+    }
+
+    /**
+     * Request view for regenerating at [endExclusive] (an index into [Conversation.messageNodes],
+     * exclusive). Returns null when the stored compaction does not apply to that range, in which
+     * case the caller keeps its raw behaviour.
+     */
+    fun buildForRange(
+        conversation: Conversation,
+        compaction: ConversationCompaction?,
+        endExclusive: Int,
+    ): CompactedMessageView? {
+        val view = build(conversation, compaction)
+        if (view.compaction == null) return null
+        // rawTailStartIndex > endExclusive means the regenerated node sits inside the compacted
+        // prefix; clearCompactionIfPrefixChanged already clears the compaction in that case, so
+        // this check is only a defensive fallback.
+        if (endExclusive !in view.rawTailStartIndex..conversation.messageNodes.size) return null
+
+        return view.copy(
+            messages = ContextCompactionPresentation.stripDisplayTools(
+                listOf(summaryMessage(view.compaction)) +
+                    conversation.currentMessages.subList(view.rawTailStartIndex, endExclusive),
+            ),
         )
     }
 
@@ -82,7 +127,22 @@ object ContextCompactionView {
                     )
                 }
             } else if (index >= inputSize) {
-                nodes += message.toMessageNode()
+                // The generated list is [summary] + tail, so generated index i >= 1 corresponds
+                // to node view.rawTailStartIndex + i - 1. On the normal (non-regenerate) path the
+                // view's tail always runs to the end of the conversation, so this always lands
+                // past the last node and falls through to the append below - byte-identical to
+                // before this was made positional for the regenerate case.
+                val boundaryNodeIndex = view.rawTailStartIndex + index - 1
+                if (boundaryNodeIndex <= nodes.lastIndex) {
+                    val node = nodes[boundaryNodeIndex]
+                    val newMessages = node.messages + message
+                    nodes[boundaryNodeIndex] = node.copy(
+                        messages = newMessages,
+                        selectIndex = newMessages.lastIndex,
+                    )
+                } else {
+                    nodes += message.toMessageNode()
+                }
             }
         }
 

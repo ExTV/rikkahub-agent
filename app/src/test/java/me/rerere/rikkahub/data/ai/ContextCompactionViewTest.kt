@@ -246,6 +246,146 @@ class ContextCompactionViewTest {
     }
 
     @Test
+    fun `buildForRange clips the tail and keeps the summary at index 0`() {
+        val nodes = listOf("one", "two", "three", "four", "five").map { text ->
+            MessageNode(messages = listOf(UIMessage.user(text)))
+        }
+        val conversation = Conversation(
+            assistantId = Uuid.random(),
+            messageNodes = nodes,
+        )
+        val compaction = ConversationCompaction(
+            conversationId = conversation.id,
+            summary = "summary of one and two",
+            tailStartNodeId = nodes[2].id,
+            sourceEndNodeId = nodes[1].id,
+            summaryModelId = Uuid.random(),
+            isAuto = true,
+            sourceTokenEstimate = 100,
+            createdAt = Instant.now(),
+        )
+
+        // Regenerating node index 3 ("four"): the range should stop before it.
+        val view = ContextCompactionView.buildForRange(conversation, compaction, endExclusive = 3)
+
+        assertEquals(2, view!!.rawTailStartIndex)
+        assertEquals(listOf("summary of one and two", "three"), view.messages.map { it.toText() })
+    }
+
+    @Test
+    fun `buildForRange returns null when the compaction does not resolve`() {
+        val conversation = Conversation(
+            assistantId = Uuid.random(),
+            messageNodes = listOf(MessageNode(messages = listOf(UIMessage.user("original")))),
+        )
+        val stale = ConversationCompaction(
+            conversationId = conversation.id,
+            summary = "stale summary",
+            tailStartNodeId = Uuid.random(),
+            sourceEndNodeId = Uuid.random(),
+            summaryModelId = Uuid.random(),
+            isAuto = true,
+            sourceTokenEstimate = 100,
+            createdAt = Instant.now(),
+        )
+
+        assertEquals(null, ContextCompactionView.buildForRange(conversation, stale, endExclusive = 1))
+        assertEquals(null, ContextCompactionView.buildForRange(conversation, null, endExclusive = 1))
+    }
+
+    @Test
+    fun `buildForRange returns null when endExclusive is inside the compacted prefix`() {
+        val nodes = listOf("one", "two", "three", "four").map { text ->
+            MessageNode(messages = listOf(UIMessage.user(text)))
+        }
+        val conversation = Conversation(
+            assistantId = Uuid.random(),
+            messageNodes = nodes,
+        )
+        val compaction = ConversationCompaction(
+            conversationId = conversation.id,
+            summary = "summary of one and two",
+            tailStartNodeId = nodes[2].id,
+            sourceEndNodeId = nodes[1].id,
+            summaryModelId = Uuid.random(),
+            isAuto = true,
+            sourceTokenEstimate = 100,
+            createdAt = Instant.now(),
+        )
+
+        // endExclusive = 1 lands inside the compacted prefix (rawTailStartIndex is 2).
+        assertEquals(null, ContextCompactionView.buildForRange(conversation, compaction, endExclusive = 1))
+    }
+
+    @Test
+    fun `merging a regenerate result adds the reply as a variant of the boundary node`() {
+        val nodes = listOf("one", "two", "three", "four", "five").map { text ->
+            MessageNode(messages = listOf(UIMessage.user(text)))
+        }
+        val conversation = Conversation(
+            assistantId = Uuid.random(),
+            messageNodes = nodes,
+        )
+        val compaction = ConversationCompaction(
+            conversationId = conversation.id,
+            summary = "summary of one and two",
+            tailStartNodeId = nodes[2].id,
+            sourceEndNodeId = nodes[1].id,
+            summaryModelId = Uuid.random(),
+            isAuto = true,
+            sourceTokenEstimate = 100,
+            createdAt = Instant.now(),
+        )
+        // endExclusive = 3 regenerates node 3 ("four"): context is [summary, three].
+        val view = ContextCompactionView.buildForRange(conversation, compaction, endExclusive = 3)!!
+        val reply = UIMessage.assistant("regenerated four")
+
+        val merged = ContextCompactionView.mergeGeneratedMessages(
+            conversation = conversation,
+            view = view,
+            generatedMessages = view.messages + reply,
+        )
+
+        // The regenerated reply lands as a new variant on node 3, not appended at the end.
+        assertEquals(5, merged.messageNodes.size)
+        val regeneratedNode = merged.messageNodes[3]
+        assertEquals(listOf("four", "regenerated four"), regeneratedNode.messages.map { it.toText() })
+        assertEquals(1, regeneratedNode.selectIndex)
+        // The context node and the node after are untouched.
+        assertSame(nodes[2], merged.messageNodes[2])
+        assertSame(nodes[4], merged.messageNodes[4])
+        // The synthetic summary never becomes a node.
+        assertTrue(merged.messageNodes.none { node -> node.messages.any { it.id == view.messages.first().id } })
+    }
+
+    @Test
+    fun `two build calls on the same compaction produce identical summary message identity`() {
+        val nodes = listOf("one", "two", "three").map { text ->
+            MessageNode(messages = listOf(UIMessage.user(text)))
+        }
+        val conversation = Conversation(
+            assistantId = Uuid.random(),
+            messageNodes = nodes,
+        )
+        val compaction = ConversationCompaction(
+            conversationId = conversation.id,
+            summary = "summary",
+            tailStartNodeId = nodes[1].id,
+            sourceEndNodeId = nodes[0].id,
+            summaryModelId = Uuid.random(),
+            isAuto = true,
+            sourceTokenEstimate = 100,
+            createdAt = Instant.now(),
+        )
+
+        val first = ContextCompactionView.build(conversation, compaction).messages.first()
+        val second = ContextCompactionView.build(conversation, compaction).messages.first()
+
+        assertEquals(first.id, second.id)
+        assertEquals(first.createdAt, second.createdAt)
+    }
+
+    @Test
     fun `compactedPrefixUnchanged is false when the compacted prefix itself changes`() {
         val nodes = listOf("zero", "one", "two", "three").map { text ->
             MessageNode(messages = listOf(UIMessage.user(text)))

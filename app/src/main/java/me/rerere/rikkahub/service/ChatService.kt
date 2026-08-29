@@ -131,6 +131,15 @@ private const val COMPACTION_MAX_REQUEST_OUTPUT_TOKENS = 16_384
 private const val MAX_PARALLEL_COMPACTION_REQUESTS = 4
 private const val MAX_FULL_CONTEXT_MAP_GROUPS = 8
 /**
+ * Cap the automatic-compaction raw tail at half of the trigger threshold (after reserving room
+ * for the summary itself). Landing right at the trigger means the very next tool result crosses
+ * it again, forcing a brand-new summary - a new request prefix and therefore a full cache miss -
+ * on almost every turn. Leaving this much headroom lets several turns reuse the same cached
+ * prefix before compaction has to fire again.
+ */
+private const val COMPACTION_TAIL_BUDGET_PERCENT = 50
+private const val MIN_AUTOMATIC_TAIL_BUDGET_TOKENS = 512
+/**
  * Streaming chunks can arrive once per token. Persisting every chunk rewrites all message nodes
  * and can throttle the provider, while persisting only at the end loses the visible response when
  * the user changes screens or the process is killed. Keep the durable snapshot reasonably fresh
@@ -1288,13 +1297,23 @@ class ChatService(
                     processingStatus = session.processingStatus,
                 )
             } else {
-                null
+                // Regenerating an assistant message: request the compacted view clipped to this
+                // range so the request matches what a normal turn would have sent, instead of
+                // the full raw history (RC1). loadCompactedMessageView resolves and, if stale,
+                // clears the stored compaction exactly as the normal path does - reused here
+                // rather than duplicated.
+                ContextCompactionView.buildForRange(
+                    conversation = conversation,
+                    compaction = loadCompactedMessageView(conversation).compaction,
+                    endExclusive = messageRange.endInclusive + 1,
+                )
             }
             val messagesForGeneration = if (messageRange != null) {
-                conversation.currentMessages.subList(
-                    messageRange.start,
-                    messageRange.endInclusive + 1,
-                )
+                compactedMessageView?.messages
+                    ?: conversation.currentMessages.subList(
+                        messageRange.start,
+                        messageRange.endInclusive + 1,
+                    )
             } else {
                 compactedMessageView!!.messages
             }
@@ -1982,6 +2001,14 @@ class ChatService(
                     val targetTokens = settings.getContextCompactionTargetTokens(
                         compactionContextLength(settings, model),
                     )
+                    val triggerTokens = automaticCompactionTriggerTokens(settings, model)
+                    // Choose the tail boundary so the post-compaction request already lands
+                    // comfortably below the trigger, instead of accepting a tail that sits right
+                    // at it and re-summarizing on the next turn (see COMPACTION_TAIL_BUDGET_PERCENT).
+                    val maxTailTokens = triggerTokens?.let {
+                        (it * COMPACTION_TAIL_BUDGET_PERCENT / 100 - targetTokens)
+                            .coerceAtLeast(MIN_AUTOMATIC_TAIL_BUDGET_TOKENS)
+                    }
                     val firstCompaction = createAutomaticCompaction(
                         conversation = latestConversation,
                         currentView = view,
@@ -1998,9 +2025,9 @@ class ChatService(
                         } else {
                             settings.autoCompactionKeepRecentToolCalls
                         },
+                        maxTailTokens = maxTailTokens,
                     )
                     val firstView = ContextCompactionView.build(latestConversation, firstCompaction)
-                    val triggerTokens = automaticCompactionTriggerTokens(settings, model)
                     if (
                         triggerTokens != null &&
                         firstView.rawTailStartIndex < latestConversation.messageNodes.size &&
@@ -2073,6 +2100,7 @@ class ChatService(
         settings: Settings,
         targetTokens: Int,
         keepRecentToolCalls: Int,
+        maxTailTokens: Int? = null,
     ): ConversationCompaction {
         if (conversation.messageNodes.size < 2) {
             throw IllegalStateException(context.getString(R.string.chat_page_compress_not_enough_messages))
@@ -2082,6 +2110,7 @@ class ChatService(
             messages = conversation.currentMessages,
             rawTailStartIndex = currentView.rawTailStartIndex,
             keepRecentToolCalls = keepRecentToolCalls,
+            maxTailTokens = maxTailTokens,
         )
 
         // A subsequent compaction may legitimately consume the final raw tail message,
@@ -2095,7 +2124,7 @@ class ChatService(
         }
 
         val messagesToCompress = buildList {
-            currentView.compaction?.let { add(UIMessage.user(it.summary)) }
+            currentView.compaction?.let { add(ContextCompactionView.summaryMessage(it)) }
             addAll(
                 conversation.currentMessages.subList(
                     currentView.rawTailStartIndex,
@@ -2188,7 +2217,7 @@ class ChatService(
                     requestedTailStart,
                 )
                 val messagesToCompress = buildList {
-                    currentView.compaction?.let { add(UIMessage.user(it.summary)) }
+                    currentView.compaction?.let { add(ContextCompactionView.summaryMessage(it)) }
                     addAll(
                         allMessages.subList(
                             currentView.rawTailStartIndex,
