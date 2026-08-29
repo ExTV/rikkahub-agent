@@ -57,6 +57,55 @@ internal fun parseExecResponse(raw: String): JsonObject =
     }
 
 /**
+ * Outcome of a bind attempt against [IShizukuUserService], see [ShizukuManager.ensureBound].
+ * Distinguishes *why* a bind failed instead of collapsing every case to `null` (#45: a thrown
+ * exception, a died binding and a plain timeout used to be reported identically as
+ * `shizuku_bind_failed`).
+ */
+internal sealed interface BindResult {
+    data class Connected(val service: IShizukuUserService) : BindResult
+
+    sealed interface Failure : BindResult {
+        val phase: String
+
+        /** `Shizuku.bindUserService` threw synchronously. */
+        data class BindThrew(val throwable: Throwable) : Failure {
+            override val phase = "bind_threw"
+        }
+
+        /** [ServiceConnection.onBindingDied] fired before [ServiceConnection.onServiceConnected],
+         *  or the latter fired with a null/dead binder (the remote process died between connect
+         *  and the first `pingBinder()`) -- either way there is no usable service. */
+        data object BindingDied : Failure {
+            override val phase = "binding_died"
+        }
+
+        /** No connection callback arrived within [BIND_TIMEOUT_MS]. */
+        data object Timeout : Failure {
+            override val phase = "bind_timeout"
+        }
+    }
+}
+
+/**
+ * Build the `shizuku_bind_failed` envelope for a failed bind attempt, carrying `phase` (which
+ * of the three failure modes it was) and, for [BindResult.Failure.BindThrew], a `reason` naming
+ * the throwable's class and message. Never a stack trace: that goes to logcat only, see
+ * [ShizukuManager.startBind]. Pure, so unit-testable without the Shizuku SDK.
+ */
+internal fun bindFailedResponse(failure: BindResult.Failure): JsonObject = buildJsonObject {
+    put("error", "shizuku_bind_failed")
+    put(
+        "recovery",
+        "Could not bind the Shizuku user service. Retry; if it keeps failing, restart the Shizuku service and re-grant permission from Settings -> Shizuku.",
+    )
+    put("phase", failure.phase)
+    if (failure is BindResult.Failure.BindThrew) {
+        put("reason", "${failure.throwable::class.java.simpleName}: ${failure.throwable.message}")
+    }
+}
+
+/**
  * Thin wrapper around the static [Shizuku] SDK object (dev.rikka.shizuku:api 13.1.5) plus the
  * bind/unbind lifecycle for [IShizukuUserService]. `Shizuku.newProcess` is private in this
  * artifact (verified with `javap -p`), so [exec] is built on `Shizuku.bindUserService` against
@@ -134,7 +183,7 @@ object ShizukuManager {
     private var connection: ServiceConnection? = null
 
     @Volatile
-    private var bindWaiter: CompletableDeferred<IShizukuUserService?>? = null
+    private var bindWaiter: CompletableDeferred<BindResult>? = null
 
     @Volatile
     private var cachedArgs: Shizuku.UserServiceArgs? = null
@@ -169,14 +218,15 @@ object ShizukuManager {
                 put("recovery", "This Shizuku server is too old to support bindUserService (needs API 10+). Update the Shizuku app.")
             }
         }
-        val api = ensureBound(context)
-            ?: return buildJsonObject {
-                put("error", "shizuku_bind_failed")
-                put("recovery", "Could not bind the Shizuku user service. Retry; if it keeps failing, restart the Shizuku service and re-grant permission from Settings -> Shizuku.")
-            }
+        val api = when (val bindResult = ensureBound(context)) {
+            is BindResult.Connected -> bindResult.service
+            is BindResult.Failure -> return bindFailedResponse(bindResult)
+        }
         val raw = withTimeoutOrNull(timeoutMs + CALL_TIMEOUT_SLACK_MS) {
             runInterruptible(Dispatchers.IO) {
-                runCatching { api.exec(command, timeoutMs) }.getOrNull()
+                runCatching { api.exec(command, timeoutMs) }
+                    .onFailure { Log.e(TAG, "user service exec() threw", it) }
+                    .getOrNull()
             }
         }
         if (raw == null) {
@@ -189,12 +239,12 @@ object ShizukuManager {
         return parseExecResponse(raw)
     }
 
-    private suspend fun ensureBound(context: Context): IShizukuUserService? {
-        bindLock.withLock { service?.let { return it } }
-        val deferred: CompletableDeferred<IShizukuUserService?>
+    private suspend fun ensureBound(context: Context): BindResult {
+        bindLock.withLock { service?.let { return BindResult.Connected(it) } }
+        val deferred: CompletableDeferred<BindResult>
         val needBind: Boolean
         bindLock.withLock {
-            service?.let { return it }
+            service?.let { return BindResult.Connected(it) }
             if (bindWaiter == null) {
                 bindWaiter = CompletableDeferred()
                 needBind = true
@@ -204,10 +254,10 @@ object ShizukuManager {
             deferred = bindWaiter!!
         }
         if (needBind) startBind(context, deferred)
-        return withTimeoutOrNull(BIND_TIMEOUT_MS) { deferred.await() }
+        return withTimeoutOrNull(BIND_TIMEOUT_MS) { deferred.await() } ?: BindResult.Failure.Timeout
     }
 
-    private fun startBind(context: Context, deferred: CompletableDeferred<IShizukuUserService?>) {
+    private fun startBind(context: Context, deferred: CompletableDeferred<BindResult>) {
         val conn = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
                 val api = if (binder != null && binder.pingBinder()) {
@@ -221,7 +271,11 @@ object ShizukuManager {
                         }
                     }
                 }
-                if (!deferred.isCompleted) deferred.complete(api)
+                if (!deferred.isCompleted) {
+                    deferred.complete(
+                        if (api != null) BindResult.Connected(api) else BindResult.Failure.BindingDied
+                    )
+                }
             }
 
             override fun onServiceDisconnected(name: ComponentName?) {
@@ -232,18 +286,17 @@ object ShizukuManager {
             override fun onBindingDied(name: ComponentName?) {
                 Log.w(TAG, "shizuku user service binding died")
                 runCatching { runBlocking { resetBinding() } }
-                if (!deferred.isCompleted) deferred.complete(null)
+                if (!deferred.isCompleted) deferred.complete(BindResult.Failure.BindingDied)
             }
         }
-        val ok = runCatching {
-            Shizuku.bindUserService(argsFor(context), conn)
-            true
-        }.getOrDefault(false)
-        if (ok) {
+        val result = runCatching { Shizuku.bindUserService(argsFor(context), conn) }
+        if (result.isSuccess) {
             connection = conn
         } else {
+            val t = result.exceptionOrNull()!!
+            Log.e(TAG, "bindUserService threw", t)
             runCatching { runBlocking { bindLock.withLock { bindWaiter = null } } }
-            if (!deferred.isCompleted) deferred.complete(null)
+            if (!deferred.isCompleted) deferred.complete(BindResult.Failure.BindThrew(t))
         }
     }
 
