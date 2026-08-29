@@ -40,6 +40,7 @@ class TimeReminderTransformerTest {
         val result = applyTimeReminder(messages)
         // reminder + original message
         assertEquals(2, result.size)
+        assertTrue(result[0].isSynthetic)
         val injected = getMessageText(result[0])
         assertTrue(injected.contains("<time_reminder>"))
         // first-message reminder carries no gap text

@@ -19,6 +19,7 @@ import me.rerere.rikkahub.data.model.ConversationCompaction
 import me.rerere.rikkahub.data.model.MessageNode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
@@ -28,6 +29,26 @@ import java.time.Instant
 import kotlin.uuid.Uuid
 
 class ChatServiceTest {
+    @Test
+    fun `fork conversation inherits folder and workspace context`() {
+        val source = Conversation(
+            assistantId = Uuid.random(),
+            title = "Source conversation",
+            messageNodes = emptyList(),
+            workspaceCwd = "/workspace/project",
+            folderId = Uuid.random(),
+        )
+
+        val fork = createForkConversation(source, emptyList())
+
+        assertNotEquals(source.id, fork.id)
+        assertEquals(source.assistantId, fork.assistantId)
+        assertEquals(source.workspaceCwd, fork.workspaceCwd)
+        assertEquals(source.folderId, fork.folderId)
+        assertEquals("", fork.title)
+        assertFalse(fork.isPinned)
+    }
+
     @Test
     fun `background generation params include model custom request configuration`() {
         val headers = listOf(CustomHeader(name = "X-Gateway-Token", value = "test-token"))

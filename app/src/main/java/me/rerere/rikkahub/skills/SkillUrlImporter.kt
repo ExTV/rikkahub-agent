@@ -145,7 +145,7 @@ class SkillUrlImporter(
         val frontmatter = body.substring(0, end)
         val rest = body.substring(end)
         val rewritten = frontmatter.lines().joinToString("\n") { line ->
-            if (line.trimEnd('\r').startsWith("name:")) "name: $newName" else line
+            if (line.trimEnd('\r').startsWith("name:")) "name: ${yamlQuote(newName)}" else line
         }
         return rewritten + rest
     }
@@ -213,10 +213,10 @@ class SkillUrlImporter(
         val transcodedBody = ToolNameTranscoder.transcode(raw)
         val frontmatterBlock = buildString {
             appendLine("---")
-            appendLine("name: $sanitisedName")
-            appendLine("description: ${descCandidate.replace("\n", " ").replace("\"", "")}")
+            appendLine("name: ${yamlQuote(sanitisedName)}")
+            appendLine("description: ${yamlQuote(descCandidate.replace("\n", " "))}")
             appendLine("source-format: openclaw")
-            appendLine("source-url: $sourceUrl")
+            appendLine("source-url: ${yamlQuote(sourceUrl)}")
             appendLine("---")
         }
         return frontmatterBlock + "\n" + transcodedBody
@@ -242,10 +242,10 @@ class SkillUrlImporter(
         val sanitisedName = slugify(name)
         val body = buildString {
             appendLine("---")
-            appendLine("name: $sanitisedName")
-            appendLine("description: ${description.replace("\n", " ").replace("\"", "")}")
+            appendLine("name: ${yamlQuote(sanitisedName)}")
+            appendLine("description: ${yamlQuote(description.replace("\n", " "))}")
             appendLine("source-format: hermes")
-            appendLine("source-url: $sourceUrl")
+            appendLine("source-url: ${yamlQuote(sourceUrl)}")
             appendLine("---")
             appendLine()
             appendLine("# $name")
@@ -281,8 +281,23 @@ class SkillUrlImporter(
         val end = nativeMd.indexOf("\r\n---", startIndex = 3).takeIf { it >= 0 }
             ?: nativeMd.indexOf("\n---", startIndex = 3).takeIf { it >= 0 }
             ?: return nativeMd
-        return nativeMd.substring(0, end) + "\nsource-url: $sourceUrl" + nativeMd.substring(end)
+        return nativeMd.substring(0, end) + "\nsource-url: ${yamlQuote(sourceUrl)}" + nativeMd.substring(end)
     }
+
+    /**
+     * Render [value] as a YAML-safe double-quoted scalar for splicing into a synthesised or
+     * rewritten frontmatter line. Synthesised values are web- or user-sourced text that can
+     * contain colons, quotes, backslashes, or embedded newlines — any of which breaks a
+     * strict YAML parse if written as an unquoted plain scalar (a colon-space inside an
+     * unquoted value is a YAML syntax error). Always quote rather than trying to detect when
+     * quoting is needed.
+     */
+    private fun yamlQuote(value: String): String =
+        "\"" + value
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "") + "\""
 
     /** Public for testability. */
     fun checkUrl(url: String): Pair<String, String>? {

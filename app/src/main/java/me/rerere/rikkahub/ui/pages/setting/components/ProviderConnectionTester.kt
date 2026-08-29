@@ -96,19 +96,19 @@ fun ProviderConnectionTester(
                     }
 
                     TestResultItem(
-                        label = stringResource(R.string.provider_test_non_streaming),
+                        label = stringResource(R.string.setting_provider_page_test_non_streaming),
                         state = nonStreamingState,
                         resultText = (nonStreamingState as? UiState.Success)?.data ?: ""
                     )
 
                     TestResultItem(
-                        label = stringResource(R.string.provider_test_streaming),
+                        label = stringResource(R.string.setting_provider_page_test_streaming),
                         state = streamingState,
                         resultText = streamingText
                     )
 
                     TestResultItem(
-                        label = stringResource(R.string.provider_test_tool_call),
+                        label = stringResource(R.string.setting_provider_page_test_tool_call),
                         state = toolsState,
                         resultText = (toolsState as? UiState.Success)?.data ?: ""
                     )
@@ -197,15 +197,18 @@ fun ProviderConnectionTester(
                                         .firstOrNull()
                                     val resultText = if (toolCall != null) {
                                         context.getString(
-                                            R.string.provider_test_tool_called,
+                                            R.string.setting_provider_page_test_tool_called,
                                             toolCall.toolName,
-                                            toolCall.input,
+                                            toolCall.input
                                         )
                                     } else {
                                         val text = message.parts
                                             .filterIsInstance<UIMessagePart.Text>()
                                             .joinToString("") { it.text }
-                                        context.getString(R.string.provider_test_no_tool, text)
+                                        context.getString(
+                                            R.string.setting_provider_page_test_tool_not_called,
+                                            text
+                                        )
                                     }
                                     toolsState = UiState.Success(resultText)
                                 }.onFailure { toolsState = UiState.Error(it) }
@@ -236,7 +239,9 @@ private fun TestResultItem(
         Text(
             text = label,
             style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.width(64.dp)
+            modifier = Modifier.width(120.dp),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
         )
         when (state) {
             is UiState.Idle -> Text(

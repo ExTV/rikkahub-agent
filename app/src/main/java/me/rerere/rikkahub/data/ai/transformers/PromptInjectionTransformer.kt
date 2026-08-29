@@ -165,7 +165,7 @@ internal fun applyInjections(
                 }
             }
 
-            result[systemIndex] = systemMessage.copy(parts = parts)
+            result[systemIndex] = systemMessage.copy(parts = parts, isSynthetic = true)
         }
     } else {
         // 没有系统消息时，创建一个新的系统消息
@@ -185,7 +185,7 @@ internal fun applyInjections(
         }
 
         if (combinedContent.isNotEmpty()) {
-            result.add(0, UIMessage.system(combinedContent))
+            result.add(0, UIMessage.system(combinedContent).copy(isSynthetic = true))
         }
     }
 
@@ -246,7 +246,9 @@ private fun createMergedInjectionMessages(injections: List<PromptInjection>): Li
             when (role) {
                 MessageRole.ASSISTANT -> UIMessage.assistant(mergedContent)
                 else -> UIMessage.user(mergedContent)
-            }
+            }.copy(
+                isSynthetic = true,
+            )
         }
 }
 

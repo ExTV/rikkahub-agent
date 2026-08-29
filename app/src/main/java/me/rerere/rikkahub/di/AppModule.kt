@@ -16,6 +16,7 @@ import me.rerere.rikkahub.data.telegram.TelegramBotClient
 import me.rerere.rikkahub.data.telegram.TelegramBotPreferences
 import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.service.CronJobScheduler
+import me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceTerminalSessionManager
 import me.rerere.rikkahub.utils.EmojiData
 import me.rerere.rikkahub.utils.EmojiUtils
 import me.rerere.rikkahub.utils.JsonInstant
@@ -206,7 +207,10 @@ val appModule = module {
     }
 
     single {
-        UpdateChecker(get())
+        UpdateChecker(
+            client = get(),
+            appScope = get(),
+        )
     }
 
     single {
@@ -229,6 +233,10 @@ val appModule = module {
         AILoggingManager(get(), get())
     }
 
+    single {
+        WorkspaceTerminalSessionManager(get(), get())
+    }
+
     // Phase 22A: Local-LLM on-device providers
     single { me.rerere.locallm.LocalRuntimePreferences(get()) }
     single { me.rerere.locallm.litert.LiteRtRuntime(get()) }
@@ -243,6 +251,7 @@ val appModule = module {
             conversationRepo = get(),
             memoryRepository = get(),
             generationHandler = get(),
+            translationHandler = get(),
             templateTransformer = get(),
             providerManager = get(),
             localTools = get(),

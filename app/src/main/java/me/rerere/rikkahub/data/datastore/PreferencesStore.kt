@@ -141,6 +141,7 @@ class SettingsStore(
         val THEME_ID = stringPreferencesKey("theme_id")
         val CUSTOM_THEMES = stringPreferencesKey("custom_themes")
         val DISPLAY_SETTING = stringPreferencesKey("display_setting")
+        val NETWORK_SETTING = stringPreferencesKey("network_setting")
         val DEVELOPER_MODE = booleanPreferencesKey("developer_mode")
 
         // 模型选择
@@ -326,6 +327,12 @@ class SettingsStore(
                 }.getOrElse {
                     Log.w(TAG, "Failed to decode displaySetting, using default", it)
                     DisplaySetting()
+                },
+                networkSetting = runCatching {
+                    JsonInstant.decodeFromString<NetworkSetting>(preferences[NETWORK_SETTING] ?: "{}")
+                }.getOrElse {
+                    Log.w(TAG, "Failed to decode networkSetting, using default", it)
+                    NetworkSetting()
                 },
                 searchServices = preferences[SEARCH_SERVICES]?.let { raw ->
                     runCatching { JsonInstant.decodeFromString<List<SearchServiceOptions>>(raw) }.getOrElse {
@@ -626,6 +633,7 @@ class SettingsStore(
                     pasteLongTextThreshold = settings.displaySetting.pasteLongTextThreshold.coerceIn(100, 10000)
                 )
             )
+            preferences[NETWORK_SETTING] = JsonInstant.encodeToString(settings.networkSetting)
 
             preferences[FAVORITE_MODELS] = JsonInstant.encodeToString(settings.favoriteModels)
             preferences[SELECT_MODEL] = settings.chatModelId.toString()
@@ -822,6 +830,7 @@ data class Settings(
     val customThemes: List<CustomTheme> = emptyList(),
     val developerMode: Boolean = false,
     val displaySetting: DisplaySetting = DisplaySetting(),
+    val networkSetting: NetworkSetting = NetworkSetting(),
     val favoriteModels: List<Uuid> = emptyList(),
     val chatModelId: Uuid = Uuid.random(),
     val fastModelId: Uuid = Uuid.random(),
@@ -927,6 +936,14 @@ enum class AiLogLevel(val preferenceName: String) {
         fun fromPreference(value: String?): AiLogLevel = entries.firstOrNull { it.preferenceName == value } ?: INFO
     }
 }
+
+@Serializable
+data class NetworkSetting(
+    val userAgent: String = "",
+    val proxyUrl: String = "",
+    val proxyUsername: String = "",
+    val proxyPassword: String = "",
+)
 
 @Serializable
 enum class ChatFontFamily {

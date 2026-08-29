@@ -107,6 +107,41 @@ class SkillUrlImporterTest {
         assertEquals("morning-routine", ok.metadata.name)
     }
 
+    @Test fun `openclaw format with colon in description round-trips through the frontmatter parser`() {
+        // Regression: SkillFrontmatterParser now parses real YAML (snakeyaml). An unquoted
+        // colon-space inside a synthesised description is a YAML syntax error that silently
+        // fails the whole parse (runCatching swallows it), losing `name` along with it.
+        val md = """
+            # Morning Routine
+
+            Run my morning checks: battery, calendar, mail.
+
+            ## Steps
+            1. Read battery.
+        """.trimIndent()
+        val r = importer.importFromText(md, sourceLabel = "test://openclaw")
+        assertTrue("expected Ok, got $r", r is SkillUrlImporter.Result.Ok)
+        val ok = r as SkillUrlImporter.Result.Ok
+        assertEquals(SkillUrlImporter.SkillFormat.OPENCLAW, ok.format)
+        assertEquals("morning-routine", ok.metadata.name)
+    }
+
+    @Test fun `openclaw format with double quote in description round-trips through the frontmatter parser`() {
+        val md = """
+            # Say "Hello"
+
+            Greets the user with a "friendly" message.
+
+            ## Steps
+            1. Speak.
+        """.trimIndent()
+        val r = importer.importFromText(md, sourceLabel = "test://openclaw")
+        assertTrue("expected Ok, got $r", r is SkillUrlImporter.Result.Ok)
+        val ok = r as SkillUrlImporter.Result.Ok
+        assertEquals(SkillUrlImporter.SkillFormat.OPENCLAW, ok.format)
+        assertEquals("say-hello", ok.metadata.name)
+    }
+
     @Test fun `hermes JSON format produces native markdown`() {
         val json = """
             {
