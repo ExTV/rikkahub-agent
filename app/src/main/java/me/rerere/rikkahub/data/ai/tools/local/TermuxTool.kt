@@ -154,6 +154,47 @@ internal sealed class CaptureResult {
 }
 
 /**
+ * Wrap [executable]/[arguments] so the real command runs through `bash -c` and prints a
+ * per-call [marker] right after it exits, whatever its exit status. `bash -c <script> <name>
+ * <args...>` binds `$0` to `<name>` and `$@` to the rest, so the original executable goes in
+ * the `$0` slot with no `--` separator (a `--` there would land the executable in `$1` and run
+ * the wrong thing). Arguments stay literal argv entries, never interpolated into the script
+ * text, so bytes like spaces, `$(...)` and `;` survive unchanged. Pure.
+ */
+internal fun buildMarkerWrappedArgv(
+    bashPath: String,
+    executable: String,
+    arguments: Array<String>,
+    marker: String,
+): Pair<String, Array<String>> {
+    val script = "\"\$0\" \"\$@\"; ec=\$?; printf '\\n%s' '$marker'; exit \$ec"
+    return bashPath to (arrayOf("-c", script, executable, *arguments))
+}
+
+/**
+ * Decide whether a Termux result bundle is the real completion, as opposed to the early
+ * start-ACK broadcast Termux fires immediately (`err=-1, exitCode=0`, empty stdout/stderr -
+ * byte-identical to a successful empty run). An actual internal error ([err] != -1) or a
+ * nonzero [exitCode] is always terminal - a denial or a real failure never reaches the marker
+ * print. Otherwise (err=-1, exitCode=0, the ack shape) it is terminal only once [stdout] carries
+ * our per-call [marker], which only the real completion broadcast can print. Pure.
+ */
+internal fun isTerminalResult(err: Int, exitCode: Int, stdout: String, marker: String): Boolean {
+    if (err != -1 || exitCode != 0) return true
+    return stdout.endsWith(marker)
+}
+
+/**
+ * Remove the trailing `"\n" + marker` appended by [buildMarkerWrappedArgv]'s script, restoring
+ * the command's real stdout. Leaves [stdout] untouched when the marker isn't present (e.g. an
+ * error bundle whose script never reached the `printf`). Pure.
+ */
+internal fun stripTerminationMarker(stdout: String, marker: String): String {
+    val suffix = "\n$marker"
+    return if (stdout.endsWith(suffix)) stdout.removeSuffix(suffix) else stdout
+}
+
+/**
  * Dispatch a Termux command and suspend until it completes (or times out), returning the
  * captured output. Implementation registers a one-shot BroadcastReceiver, hands a
  * PendingIntent for it to Termux, and waits on a CompletableDeferred until Termux fires
@@ -180,6 +221,11 @@ internal suspend fun runCommandCapture(
     me.rerere.rikkahub.data.ai.AgentTurnTracker.touchPackage(TERMUX_PACKAGE, "com.termux.api")
     val resultDeferred = CompletableDeferred<Bundle>()
     val resultAction = "${ctx.packageName}.TERMUX_RESULT_${UUID.randomUUID()}"
+    // Per-call completion marker (see buildMarkerWrappedArgv / isTerminalResult). Termux's
+    // start-ACK broadcast is byte-identical to a successful empty run (err=-1, exitCode=0,
+    // empty output), so without this the tool used to return early on the ACK and report
+    // success while the command was still running (#83).
+    val marker = UUID.randomUUID().toString()
     val receiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, intent: Intent) {
             // Termux's RunCommandService fires the PendingIntent *twice* in 0.118.x:
@@ -208,6 +254,15 @@ internal suspend fun runCommandCapture(
             // Some Termux variants put the keys directly on the broadcast intent rather than
             // nested under "result". Support both shapes by falling back to flat extras.
             val effective = bundle ?: intent.extras ?: Bundle()
+            // A populated but non-terminal bundle is the start-ACK: ignore it and keep waiting
+            // for the marker-bearing completion broadcast; the overall timeout still bounds it.
+            if (!isTerminalResult(
+                    err = effective.getInt(RESULT_KEY_ERR, -1),
+                    exitCode = effective.getInt(RESULT_KEY_EXIT_CODE, -1),
+                    stdout = effective.getString(RESULT_KEY_STDOUT).orEmpty(),
+                    marker = marker,
+                )
+            ) return
             if (resultDeferred.isActive) resultDeferred.complete(effective)
         }
     }
@@ -235,11 +290,22 @@ internal suspend fun runCommandCapture(
         return CaptureResult.OtherError("PendingIntent creation failed: ${t.message}")
     }
 
+    // Always dispatch through bash so the marker print above is reachable, regardless of what
+    // executable the caller asked for. Known behaviour change, accepted: the raw
+    // executable/arguments tool path (termuxRunCommandTool) used to bypass bash and now
+    // requires it - verify() already hard-requires $TERMUX_BIN_DIR/bash and TermuxSessionTool
+    // already assumes bash, so this does not add a new class of dependency.
+    val (wrappedExecutable, wrappedArguments) = buildMarkerWrappedArgv(
+        bashPath = "$TERMUX_BIN_DIR/bash",
+        executable = executable,
+        arguments = arguments,
+        marker = marker,
+    )
     val intent = Intent().apply {
         setClassName(TERMUX_PACKAGE, TERMUX_RUN_COMMAND_SERVICE)
         action = TERMUX_RUN_COMMAND_ACTION
-        putExtra("com.termux.RUN_COMMAND_PATH", executable)
-        putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arguments)
+        putExtra("com.termux.RUN_COMMAND_PATH", wrappedExecutable)
+        putExtra("com.termux.RUN_COMMAND_ARGUMENTS", wrappedArguments)
         putExtra("com.termux.RUN_COMMAND_WORKDIR", workingDir)
         putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
         putExtra(EXTRA_PENDING_INTENT, pi)
@@ -268,7 +334,7 @@ internal suspend fun runCommandCapture(
                 }
             } else {
                 CaptureResult.Success(
-                    stdout = bundle.getString(RESULT_KEY_STDOUT).orEmpty(),
+                    stdout = stripTerminationMarker(bundle.getString(RESULT_KEY_STDOUT).orEmpty(), marker),
                     stderr = bundle.getString(RESULT_KEY_STDERR).orEmpty(),
                     exitCode = bundle.getInt(RESULT_KEY_EXIT_CODE, -1),
                 )
