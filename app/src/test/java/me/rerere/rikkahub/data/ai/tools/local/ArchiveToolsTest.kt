@@ -11,6 +11,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.nio.charset.Charset
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -136,5 +137,92 @@ class ArchiveToolsTest {
             """{"sources":["/nonexistent/path/xyz"],"destination":"${tmp.root.absolutePath}/x.zip"}""",
         ))
         assertEquals("source_unreadable", result["error"]?.jsonPrimitive?.content)
+    }
+
+    // --- #66: entry names mangled for archives made on Chinese Windows ----------------------
+    //
+    // Zip tools on Chinese Windows write entry names as raw GBK bytes and do not set the
+    // UTF-8 general-purpose flag (bit 11), which is exactly what ZipOutputStream(out, GBK)
+    // below reproduces. These fixture tests are also what proves which of the two known JDK
+    // zip-coder failure modes (thrown IllegalArgumentException vs. a substituted U+FFFD) this
+    // platform exhibits for a malformed name -- both are handled either way.
+
+    @Test fun `GBK-encoded entry name round-trips through unzip_file`() {
+        val gbkZip = File(tmp.root, "gbk.zip")
+        val chineseName = "测试文件.txt"
+        ZipOutputStream(gbkZip.outputStream(), Charset.forName("GBK")).use { zos ->
+            zos.putNextEntry(ZipEntry(chineseName))
+            zos.write("content".toByteArray())
+            zos.closeEntry()
+        }
+        val destDir = tmp.newFolder("gbk_extracted").absolutePath
+        val result = obj(execTool(
+            unzipFileTool(NULL_CONTEXT),
+            """{"source":"${gbkZip.absolutePath}","destination_dir":"$destDir"}""",
+        ))
+        assertTrue("expected success, got $result", result["success"]!!.jsonPrimitive.content.toBoolean())
+        val extracted = File(destDir).walkTopDown().firstOrNull { it.name == chineseName }
+        assertTrue(
+            "expected an entry named $chineseName under $destDir",
+            extracted != null,
+        )
+    }
+
+    @Test fun `GBK-encoded entry name round-trips through list_zip_contents`() {
+        val gbkZip = File(tmp.root, "gbk_list.zip")
+        val chineseName = "报告.docx"
+        ZipOutputStream(gbkZip.outputStream(), Charset.forName("GBK")).use { zos ->
+            zos.putNextEntry(ZipEntry(chineseName))
+            zos.write("content".toByteArray())
+            zos.closeEntry()
+        }
+        val result = obj(execTool(
+            listZipContentsTool(NULL_CONTEXT),
+            """{"source":"${gbkZip.absolutePath}"}""",
+        ))
+        val entries = result["entries"]!!.jsonArray
+        assertEquals(1, entries.size)
+        assertEquals(chineseName, entries[0].jsonObject["name"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun `a UTF-8 entry name (with the UTF-8 flag set) still lists correctly`() {
+        // The default ZipOutputStream(OutputStream) constructor writes UTF-8 and sets bit 11,
+        // which the JDK zip coder honours per entry regardless of the charset passed to the
+        // reader -- so a name like this must decode correctly even after the GBK fallback
+        // exists.
+        val zip = File(tmp.root, "utf8.zip")
+        val name = "café_résumé.txt"
+        ZipOutputStream(zip.outputStream()).use { zos ->
+            zos.putNextEntry(ZipEntry(name))
+            zos.write("x".toByteArray())
+            zos.closeEntry()
+        }
+        val result = obj(execTool(listZipContentsTool(NULL_CONTEXT), """{"source":"${zip.absolutePath}"}"""))
+        assertEquals(name, result["entries"]!!.jsonArray[0].jsonObject["name"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun `an all-ASCII archive is unaffected by the charset probe`() {
+        val srcDir = tmp.newFolder("ascii_src")
+        File(srcDir, "plain.txt").writeText("hello")
+        val zipPath = "${tmp.root.absolutePath}/ascii.zip"
+        execTool(
+            zipFilesTool(NULL_CONTEXT),
+            """{"sources":["${srcDir.absolutePath}"],"destination":"$zipPath"}""",
+        )
+        val listed = obj(execTool(listZipContentsTool(NULL_CONTEXT), """{"source":"$zipPath"}"""))
+        assertTrue(listed["entries"]!!.jsonArray[0].jsonObject["name"]!!.jsonPrimitive.content.endsWith("plain.txt"))
+
+        val destDir = "${tmp.root.absolutePath}/ascii_extracted"
+        val unzipped = obj(execTool(
+            unzipFileTool(NULL_CONTEXT),
+            """{"source":"$zipPath","destination_dir":"$destDir"}""",
+        ))
+        assertTrue(unzipped["success"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals("hello", File(destDir).walkTopDown().first { it.name == "plain.txt" }.readText())
+    }
+
+    @Test fun `isMalformedZipEntryName detects the U+FFFD replacement character`() {
+        assertTrue(isMalformedZipEntryName("caf\uFFFD.txt"))
+        assertFalse(isMalformedZipEntryName("normal.txt"))
     }
 }

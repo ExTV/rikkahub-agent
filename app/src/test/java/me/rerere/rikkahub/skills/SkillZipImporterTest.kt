@@ -10,6 +10,7 @@ import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.nio.charset.Charset
 import java.nio.file.Files
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -33,9 +34,12 @@ class SkillZipImporterTest {
         runCatching { destDir.deleteRecursively() }
     }
 
-    private fun buildZip(entries: List<Pair<String, ByteArray>>): ByteArray {
+    private fun buildZip(
+        entries: List<Pair<String, ByteArray>>,
+        charset: Charset = Charsets.UTF_8,
+    ): ByteArray {
         val bos = ByteArrayOutputStream()
-        ZipOutputStream(bos).use { zos ->
+        ZipOutputStream(bos, charset).use { zos ->
             for ((name, bytes) in entries) {
                 zos.putNextEntry(ZipEntry(name))
                 zos.write(bytes)
@@ -229,5 +233,28 @@ class SkillZipImporterTest {
         val skillDir = result.getOrNull()!!
         assertTrue(skillDir.resolve("SKILL.md").exists())
         assertTrue(skillDir.resolve("notes file.txt").exists())
+    }
+
+    // #66: a skill zip produced on Chinese Windows has entry names written as raw GBK bytes,
+    // with no UTF-8 general-purpose flag set -- exactly what ZipOutputStream(out, GBK) below
+    // reproduces. See ArchiveToolsTest for the equivalent unzip_file / list_zip_contents
+    // fixture tests.
+    @Test fun `GBK-encoded entry name round-trips through the skill zip importer`() {
+        val chineseName = "笔记.txt"
+        val zip = buildZip(
+            listOf(
+                "SKILL.md" to sampleSkillMd.toByteArray(Charsets.UTF_8),
+                chineseName to "note content".toByteArray(Charsets.UTF_8),
+            ),
+            charset = Charset.forName("GBK"),
+        )
+        val result = SkillZipImporter.extractZipToDir(ByteArrayInputStream(zip), destDir)
+        assertTrue("expected success, got $result", result.isSuccess)
+        val skillDir = result.getOrNull()!!
+        assertTrue(skillDir.resolve("SKILL.md").exists())
+        assertTrue(
+            "expected an entry named $chineseName under $skillDir, found: ${skillDir.list()?.toList()}",
+            skillDir.resolve(chineseName).exists(),
+        )
     }
 }

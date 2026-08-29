@@ -4,6 +4,7 @@ import android.util.Log
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.nio.charset.Charset
 import java.util.zip.ZipInputStream
 
 /**
@@ -39,6 +40,10 @@ object SkillZipImporter {
     private const val MAX_UNCOMPRESSED_BYTES = 20L * 1024 * 1024
     private const val COPY_BUF = 8 * 1024
 
+    /** What zip tools on Chinese Windows write raw entry-name bytes as, without setting the
+     *  UTF-8 general-purpose flag (bit 11). See [detectZipEntryNameCharset]. */
+    private val GBK_CHARSET: Charset = Charset.forName("GBK")
+
     /**
      * Extract [input] into [destDir]. The destination directory MUST already exist and be
      * writable; [destDir] should be a freshly-created empty temp dir owned by the caller.
@@ -56,10 +61,25 @@ object SkillZipImporter {
             return Result.failure(SkillZipError.IoError(e.message ?: "canonical path failed"))
         }
 
+        // Spool the archive to a temp file first: entry names need to be read twice (once to
+        // decide UTF-8 vs. GBK, see detectZipEntryNameCharset, once for the real extraction
+        // below), and the caller's InputStream is single-use / not resettable. Placed next to
+        // destDir rather than inside it so it never shows up in the locateSkillRoot search
+        // below, and is always removed in the finally regardless of outcome.
+        val spooledZip = try {
+            File.createTempFile("skill-import-", ".zip", destDir.parentFile ?: destDir).also { f ->
+                f.outputStream().use { out -> input.copyTo(out) }
+            }
+        } catch (e: IOException) {
+            return Result.failure(SkillZipError.IoError(e.message ?: "failed to read zip"))
+        }
+        val entryNameCharset = runCatching { detectZipEntryNameCharset(spooledZip) }
+            .getOrDefault(Charsets.UTF_8)
+
         var entryCount = 0
         var totalBytes = 0L
         try {
-            ZipInputStream(input).use { zis ->
+            ZipInputStream(spooledZip.inputStream(), entryNameCharset).use { zis ->
                 while (true) {
                     val entry = zis.nextEntry ?: break
                     entryCount++
@@ -127,6 +147,8 @@ object SkillZipImporter {
             Log.w(TAG, "extractZipToDir: failed for ${destDir.absolutePath}", e)
             cleanup(destDir)
             return Result.failure(SkillZipError.IoError(e.message ?: "zip read failed"))
+        } finally {
+            spooledZip.delete()
         }
 
         // Locate SKILL.md (case-insensitive). Prefer root, then a single nested subdir.
@@ -154,6 +176,36 @@ object SkillZipImporter {
                 }
             }
         return null
+    }
+
+    /**
+     * Decide which charset to decode [file]'s zip entry names with (#66: zip tools on Chinese
+     * Windows write raw GBK bytes without setting the UTF-8 general-purpose flag, bit 11).
+     * Reads names with UTF-8 first -- correct both for ordinary UTF-8 archives and for any
+     * entry with that flag set, which the JDK zip coder honours per entry regardless of the
+     * charset argument here -- and retries with GBK only if a name comes back malformed. GBK
+     * is not used unconditionally, because Info-ZIP on Linux commonly writes real UTF-8 names
+     * *without* setting the flag either, and those would become mojibake decoded as GBK.
+     * "Malformed" is checked three ways, because the JDK zip coder's behavior for an invalid
+     * name has varied across versions and code paths: it may substitute U+FFFD, throw
+     * [IllegalArgumentException], or -- confirmed empirically by the GBK fixture test on the
+     * JDK this project builds with -- throw [java.util.zip.ZipException] ("invalid CEN header
+     * (bad entry name or comment)"). A [java.util.zip.ZipException] here is not necessarily a
+     * charset problem (it also covers genuine corruption), but that is harmless: mis-guessing
+     * GBK for a truly corrupt archive just means the real pass below hits the same exception
+     * again and reports the same [SkillZipError.IoError] as it did before this change.
+     */
+    private fun detectZipEntryNameCharset(file: File): Charset {
+        val malformed = try {
+            java.util.zip.ZipFile(file, Charsets.UTF_8).use { zf ->
+                zf.entries().asSequence().any { it.name.contains('\uFFFD') }
+            }
+        } catch (e: IllegalArgumentException) {
+            true
+        } catch (e: java.util.zip.ZipException) {
+            true
+        }
+        return if (malformed) GBK_CHARSET else Charsets.UTF_8
     }
 
     private fun cleanup(dir: File) {

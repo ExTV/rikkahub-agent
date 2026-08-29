@@ -18,6 +18,7 @@ import java.io.BufferedInputStream
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
+import java.nio.charset.Charset
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -235,6 +236,79 @@ internal fun isUnsafeZipEntry(entryName: String): Boolean {
         normalized.matches(Regex("^[A-Za-z]:.*"))
 }
 
+// ---------- entry-name charset detection (#66: Chinese Windows zips mojibake) ----------
+
+/** What zip tools on Chinese Windows write raw entry-name bytes as, without setting the
+ *  UTF-8 general-purpose flag (bit 11). See [detectZipStreamEntryNameCharset]. */
+private val GBK_CHARSET: Charset = Charset.forName("GBK")
+
+/**
+ * True when [name] shows the JDK zip coder's "substituted" failure mode for a malformed
+ * (non-UTF-8) entry name: U+FFFD in place of the undecodable bytes, rather than throwing. See
+ * [detectZipStreamEntryNameCharset] / [detectZipFileEntryNameCharset] for the other failure
+ * modes those callers catch instead.
+ */
+internal fun isMalformedZipEntryName(name: String): Boolean = name.contains('\uFFFD')
+
+/**
+ * Decide which charset to decode a zip's entry names with, for the streaming
+ * ([ZipInputStream]) read path used by [unzipFileTool] and [listZipContentsTool]'s content://
+ * branch. Reads names with UTF-8 first -- correct both for ordinary UTF-8 archives and for
+ * any entry with the UTF-8 general-purpose flag set, which the JDK zip coder honours per
+ * entry regardless of the charset argument here. If a name comes back malformed, retries with
+ * GBK: zip tools on Chinese Windows write raw GBK bytes without setting that flag. GBK is not
+ * used unconditionally, because Info-ZIP on Linux commonly writes real UTF-8 names *without*
+ * setting the flag either, and those would become mojibake if decoded as GBK instead.
+ *
+ * "Malformed" is checked three ways, because the JDK zip coder's behavior for an invalid name
+ * has varied across versions and code paths: it may substitute U+FFFD (see
+ * [isMalformedZipEntryName]), throw [IllegalArgumentException], or -- confirmed empirically by
+ * the GBK fixture test on the JDK this project builds with -- throw [java.util.zip.ZipException]
+ * ("invalid LOC header (bad entry name)"). A [java.util.zip.ZipException] here is not
+ * necessarily a charset problem (it also covers genuine corruption), but that is harmless:
+ * mis-guessing GBK for a truly corrupt archive just means the real pass below hits the same
+ * exception again and reports `invalid_zip` exactly as it did before this change.
+ *
+ * [openStream] must return a fresh, unconsumed stream on every call: this reads every entry
+ * name once (skipping each entry's data via [ZipInputStream.closeEntry]) and never attempts
+ * to reset or reuse the stream afterwards.
+ */
+private fun detectZipStreamEntryNameCharset(openStream: () -> InputStream?): Charset {
+    val ins = openStream() ?: return Charsets.UTF_8
+    val malformed = try {
+        ZipInputStream(BufferedInputStream(ins), Charsets.UTF_8).use { zis ->
+            var entry: ZipEntry? = zis.nextEntry
+            var bad = false
+            while (entry != null) {
+                if (isMalformedZipEntryName(entry.name)) bad = true
+                zis.closeEntry()
+                entry = zis.nextEntry
+            }
+            bad
+        }
+    } catch (e: IllegalArgumentException) {
+        true
+    } catch (e: java.util.zip.ZipException) {
+        true
+    }
+    return if (malformed) GBK_CHARSET else Charsets.UTF_8
+}
+
+/** Same decision as [detectZipStreamEntryNameCharset], for the central-directory
+ *  ([java.util.zip.ZipFile]) read path used by [listZipContentsTool]'s file:// branch. */
+private fun detectZipFileEntryNameCharset(file: File): Charset {
+    val malformed = try {
+        java.util.zip.ZipFile(file, Charsets.UTF_8).use { zf ->
+            zf.entries().asSequence().any { isMalformedZipEntryName(it.name) }
+        }
+    } catch (e: IllegalArgumentException) {
+        true
+    } catch (e: java.util.zip.ZipException) {
+        true
+    }
+    return if (malformed) GBK_CHARSET else Charsets.UTF_8
+}
+
 fun unzipFileTool(context: Context): Tool = Tool(
     name = "unzip_file",
     description = """
@@ -270,6 +344,15 @@ fun unzipFileTool(context: Context): Tool = Tool(
 
         val ins = openIn(context, source) ?: return@Tool arcErr("invalid_zip")
 
+        // Cheap probing pass (entry names only, `ins` above is left untouched for the real
+        // extraction below): decide whether entry names need GBK instead of UTF-8, see
+        // detectZipStreamEntryNameCharset. Any failure here (corrupt archive, read error) is
+        // deliberately swallowed in favor of UTF-8 — the real pass below hits the same error
+        // and already reports it correctly (invalid_zip / unzip_failed).
+        val entryNameCharset = runCatching {
+            detectZipStreamEntryNameCharset { openIn(context, source) }
+        }.getOrDefault(Charsets.UTF_8)
+
         // content:// destinations must be a granted tree directory; file:// destinations
         // a plain directory. Both write per-entry via a small writer closure.
         val contentDestTree: DocumentFile? = if (isContent(destDir)) {
@@ -288,7 +371,7 @@ fun unzipFileTool(context: Context): Tool = Tool(
         // can't slip a bomb past the per-entry skip. Decremented as bytes are written.
         val budget = longArrayOf(UNZIP_MAX_TOTAL_BYTES)
         return@Tool try {
-            ZipInputStream(BufferedInputStream(ins)).use { zis ->
+            ZipInputStream(BufferedInputStream(ins), entryNameCharset).use { zis ->
                 var entry: ZipEntry? = zis.nextEntry
                 if (entry == null) return@Tool arcErr("invalid_zip")
                 while (entry != null) {
@@ -429,8 +512,13 @@ fun listZipContentsTool(context: Context): Tool = Tool(
                 // compressed_size / crc are exact.
                 val f = File(source.removePrefix("file://"))
                 if (!f.exists() || !f.isFile) return@Tool arcErr("invalid_zip")
+                // Cheap probing pass, see detectZipFileEntryNameCharset. Any failure here
+                // (corrupt archive) is deliberately swallowed in favor of UTF-8 — the real
+                // read below hits the same error and already reports it correctly.
+                val entryNameCharset = runCatching { detectZipFileEntryNameCharset(f) }
+                    .getOrDefault(Charsets.UTF_8)
                 val entries = buildJsonArray {
-                    java.util.zip.ZipFile(f).use { zf ->
+                    java.util.zip.ZipFile(f, entryNameCharset).use { zf ->
                         for (e in zf.entries()) {
                             addJsonObject {
                                 put("name", e.name)
@@ -448,8 +536,13 @@ fun listZipContentsTool(context: Context): Tool = Tool(
                 // content:// — only a forward stream is available; size / crc populate
                 // after the entry's data has been consumed, so drain each entry first.
                 val ins = openIn(context, source) ?: return@Tool arcErr("invalid_zip")
+                // Cheap probing pass (entry names only, `ins` above is left untouched for the
+                // real listing below), see detectZipStreamEntryNameCharset.
+                val entryNameCharset = runCatching {
+                    detectZipStreamEntryNameCharset { openIn(context, source) }
+                }.getOrDefault(Charsets.UTF_8)
                 val entries = buildJsonArray {
-                    ZipInputStream(BufferedInputStream(ins)).use { zis ->
+                    ZipInputStream(BufferedInputStream(ins), entryNameCharset).use { zis ->
                         var entry: ZipEntry? = zis.nextEntry
                         if (entry == null) return@Tool arcErr("invalid_zip")
                         val drain = ByteArray(8192)
