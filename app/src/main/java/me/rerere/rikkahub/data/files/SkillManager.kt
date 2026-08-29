@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.data.datastore.SettingsStore
 
@@ -154,6 +155,11 @@ class SkillManager(
 
     suspend fun deleteSkill(name: String): Boolean = withContext(Dispatchers.IO) {
         val skillDir = resolveSkillDir(name) ?: return@withContext false
+        // Bundled-ness must be checked before deleteRecursively() destroys the directory:
+        // for a non-core bundled skill, ownership is tracked by a `.seeded` sentinel that
+        // lives inside this same directory, but bundledSkillNames() reads the asset list,
+        // which is unaffected by the delete.
+        val isBundled = name in bundledSkillNames()
         val deleted = skillDir.deleteRecursively()
         if (deleted) {
             settingsStore.update { settings ->
@@ -164,11 +170,32 @@ class SkillManager(
                         } else {
                             assistant
                         }
-                    }
+                    },
+                    // #84: record the deletion outside the (now-gone) skill directory so
+                    // seedDefaultSkillsIfNeeded can tell "never seeded" apart from
+                    // "seeded, then deleted" and does not silently re-create it.
+                    deletedBundledSkills = deletedBundledSkillsAfterDelete(
+                        current = settings.deletedBundledSkills,
+                        deletedName = name,
+                        isBundled = isBundled,
+                    ),
                 )
             }
         }
         deleted
+    }
+
+    /**
+     * Clear [name]'s deletion record (if any) and reseed, so a deliberate reinstall from
+     * the skill catalog restores a bundled skill the user previously deleted (#84). A no-op
+     * data-wise for a skill that was never deleted; the reseed pass below is still safe to
+     * run since [decideSeedAction] skips it when the bundled hash already matches.
+     */
+    suspend fun reinstallBundledSkill(name: String) {
+        settingsStore.update { settings ->
+            settings.copy(deletedBundledSkills = settings.deletedBundledSkills - name)
+        }
+        seedDefaultSkillsIfNeeded()
     }
 
     /**
@@ -288,7 +315,7 @@ class SkillManager(
      * launches skip the copy without checking individual file mtimes — and so the user can
      * delete a default skill and we will not silently re-install it.
      */
-    fun seedDefaultSkillsIfNeeded() {
+    suspend fun seedDefaultSkillsIfNeeded() {
         val assetRoot = "default-skills"
         val assetMgr = context.assets
         val skillNames = try {
@@ -297,8 +324,12 @@ class SkillManager(
             Log.w(TAG, "seedDefaultSkillsIfNeeded: cannot list assets", e)
             return
         }
+        // #84: names the user explicitly deleted. Read once per pass; deleteSkill() /
+        // reinstallBundledSkill() are the only writers, both persisted before this can run.
+        val deletedBundledSkills = settingsStore.settingsFlow.first().deletedBundledSkills
         for (skillName in skillNames) {
             val targetDir = SkillPaths.resolveSkillDir(getSkillsDir(), skillName) ?: continue
+            val deletedByUser = skillName in deletedBundledSkills
 
             // Read the bundled SKILL.md once to decide what to do.
             val bundledSkillMd = runCatching {
@@ -325,6 +356,7 @@ class SkillManager(
                     targetDirNonEmpty = false, // unused when ownedByUs is true
                     bundledHash = bundledHash,
                     storedHash = currentHash,
+                    deletedByUser = deletedByUser,
                 )
                 if (decision == SeedDecision.SKIP) continue
                 try {
@@ -354,6 +386,7 @@ class SkillManager(
                 targetDirNonEmpty = targetDir.exists() && targetDir.listFiles()?.isNotEmpty() == true,
                 bundledHash = bundledHash,
                 storedHash = storedHash,
+                deletedByUser = deletedByUser,
             )
             if (decision == SeedDecision.SKIP) continue
             try {
@@ -484,6 +517,19 @@ class SkillManager(
 internal enum class SeedDecision { SKIP, SEED }
 
 /**
+ * #84: the deletedBundledSkills set after [SkillManager.deleteSkill] deletes [deletedName].
+ * Only a bundled skill's name is ever recorded — deleting a user-created or otherwise
+ * non-bundled skill leaves [current] untouched, since [decideSeedAction] only consults this
+ * set for names that actually appear in `assets/default-skills/`. Extracted out of
+ * [SkillManager] so it is testable without a [android.content.Context]. Pure.
+ */
+internal fun deletedBundledSkillsAfterDelete(
+    current: Set<String>,
+    deletedName: String,
+    isBundled: Boolean,
+): Set<String> = if (isBundled) current + deletedName else current
+
+/**
  * Pure decision for whether a bundled skill directory should be (re)written from assets.
  * Shared by both the core (`auto_load: true`) and non-core seeding branches of
  * [SkillManager.seedDefaultSkillsIfNeeded] so they cannot drift apart, and extracted out of
@@ -495,6 +541,10 @@ internal enum class SeedDecision { SKIP, SEED }
  * skills (a directory that exists with no `.seeded` sentinel was never created by us and is
  * user-owned).
  * @param targetDirNonEmpty ignored when [ownedByUs] is `true`.
+ * @param deletedByUser #84: `true` when this skill's name is in [me.rerere.rikkahub.data.datastore.Settings.deletedBundledSkills]
+ * (the user explicitly deleted it via [SkillManager.deleteSkill]). Checked first and skips
+ * unconditionally, in both the core and non-core branches, so a deliberate delete is never
+ * mistaken for "never seeded" and silently re-created.
  */
 internal fun decideSeedAction(
     ownedByUs: Boolean,
@@ -502,7 +552,9 @@ internal fun decideSeedAction(
     targetDirNonEmpty: Boolean,
     bundledHash: String,
     storedHash: String,
+    deletedByUser: Boolean = false,
 ): SeedDecision {
+    if (deletedByUser) return SeedDecision.SKIP
     if (!ownedByUs) {
         // Never touch a directory we did not create ourselves.
         return if (targetDirExists && targetDirNonEmpty) SeedDecision.SKIP else SeedDecision.SEED

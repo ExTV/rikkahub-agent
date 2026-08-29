@@ -180,15 +180,20 @@ class SkillsVM(
     /**
      * Phase 19D — install a skill from a [CatalogEntry].
      *
-     * If the entry is `is_bundled = true`, this is a no-op (the skill is already on disk
-     * via [SkillManager.seedDefaultSkillsIfNeeded]) and we return success immediately so
-     * the UI flips its row to "Installed". Otherwise [CatalogEntry.sourceUrl] is fetched
+     * If the entry is `is_bundled = true`, this restores it via
+     * [SkillManager.reinstallBundledSkill] (a no-op when the skill was already seeded and
+     * never deleted) and we return success immediately so the UI flips its row to
+     * "Installed". Otherwise [CatalogEntry.sourceUrl] is fetched
      * via [SkillUrlImporter.importFromUrl] under a 30-second hard timeout — same surface
      * as the existing GitHub-URL import path, including HTML guard + format detector.
      */
     fun installFromCatalog(entry: CatalogEntry, onResult: (success: Boolean, message: String) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
             if (entry.isBundled) {
+                // #84: the skill may have been on disk already, or the user deleted it and
+                // this tap is a deliberate reinstall — reinstallBundledSkill() clears any
+                // deletion record and reseeds, and is a no-op when there was nothing to clear.
+                skillManager.reinstallBundledSkill(entry.name)
                 _skills.value = skillManager.listSkills()
                 withContext(Dispatchers.Main) { onResult(true, entry.name) }
                 return@launch

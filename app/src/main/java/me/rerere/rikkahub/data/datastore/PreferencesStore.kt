@@ -173,6 +173,9 @@ class SettingsStore(
         // IDs of built-in providers the user explicitly deleted; the re-seed pass
         // skips these so deletions are sticky across app restarts.
         val DELETED_BUILTIN_PROVIDER_IDS = stringPreferencesKey("deleted_builtin_provider_ids")
+        // Names of bundled skills the user explicitly deleted; the seed pass skips these
+        // (see Settings.deletedBundledSkills). Missing key -> emptySet(), no migration.
+        val DELETED_BUNDLED_SKILLS = stringPreferencesKey("deleted_bundled_skills")
 
         // 助手
         val SELECT_ASSISTANT = stringPreferencesKey("select_assistant")
@@ -297,6 +300,12 @@ class SettingsStore(
                                 .toSet()
                         }.getOrNull()
                     } ?: emptySet(),
+                deletedBundledSkills = preferences[DELETED_BUNDLED_SKILLS]?.let { raw ->
+                    runCatching { JsonInstant.decodeFromString<Set<String>>(raw) }.getOrElse {
+                        Log.w(TAG, "Failed to decode deletedBundledSkills, using default", it)
+                        emptySet()
+                    }
+                } ?: emptySet(),
                 assistants = runCatching {
                     JsonInstant.decodeFromString<List<Assistant>>(preferences[ASSISTANTS] ?: "[]")
                 }.getOrElse {
@@ -656,6 +665,7 @@ class SettingsStore(
             preferences[DELETED_BUILTIN_PROVIDER_IDS] = JsonInstant.encodeToString(
                 settings.deletedBuiltInProviderIds.map { it.toString() }.toSet()
             )
+            preferences[DELETED_BUNDLED_SKILLS] = JsonInstant.encodeToString(settings.deletedBundledSkills)
 
             preferences[ASSISTANTS] = JsonInstant.encodeToString(settings.assistants)
             preferences[SELECT_ASSISTANT] = settings.assistantId.toString()
@@ -858,6 +868,14 @@ data class Settings(
      * never re-added, so toggling it off sticks across launches.
      */
     val autoEnabledDefaultSkills: Set<String> = emptySet(),
+    /**
+     * Names of bundled skills the user explicitly deleted via [SkillManager.deleteSkill].
+     * Recorded outside the skill directory (deletion wipes that directory, sentinel and
+     * all), so [SkillManager.seedDefaultSkillsIfNeeded] can tell "never seeded" apart from
+     * "seeded, then deleted" and skip re-creating it. A deliberate reinstall through the
+     * skill catalog removes the name again.
+     */
+    val deletedBundledSkills: Set<String> = emptySet(),
     val assistantTags: List<Tag> = emptyList(),
     val searchServices: List<SearchServiceOptions> = listOf(SearchServiceOptions.DEFAULT),
     val searchCommonOptions: SearchCommonOptions = SearchCommonOptions(),
