@@ -25,7 +25,10 @@ import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.ai.mcp.McpStatus
 import me.rerere.rikkahub.data.ai.mcp.McpTool
+import me.rerere.rikkahub.data.ai.mcp.buildMcpToolName
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.getCurrentAssistant
+import me.rerere.rikkahub.data.model.Assistant
 import kotlin.uuid.Uuid
 
 /**
@@ -125,6 +128,28 @@ private fun parseHeaders(raw: JsonElement?): List<Pair<String, String>> {
 }
 
 private fun parseUuid(raw: String?): Uuid? = raw?.let { runCatching { Uuid.parse(it.trim()) }.getOrNull() }
+
+/**
+ * #88: whether [serverId] is in the calling assistant's per-assistant MCP allowlist — the
+ * same test [me.rerere.rikkahub.data.ai.mcp.McpManager.getAllAvailableTools] applies to decide
+ * what actually gets dispatched. Shared by mcp_list / mcp_get / mcp_list_tools so their
+ * `enabled_for_assistant` field can't drift from each other. Pure.
+ */
+internal fun isEnabledForAssistant(serverId: Uuid, assistantMcpServers: Set<Uuid>): Boolean =
+    serverId in assistantMcpServers
+
+/**
+ * #88: add [newServerId] to the [callingAssistantId] assistant's `mcpServers` set, leaving
+ * every other assistant untouched. A model that adds a server via mcp_add is adding it in
+ * order to use it, and has no other way to reach the per-assistant picker. Pure.
+ */
+internal fun addServerToCallingAssistant(
+    assistants: List<Assistant>,
+    callingAssistantId: Uuid,
+    newServerId: Uuid,
+): List<Assistant> = assistants.map { a ->
+    if (a.id == callingAssistantId) a.copy(mcpServers = a.mcpServers + newServerId) else a
+}
 
 /**
  * Render an [InputSchema] as a plain JSON-Schema-shaped object so the LLM can see each
@@ -248,15 +273,28 @@ fun mcpListTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
     description = """
         List all configured MCP servers with their connection status and tool counts. Read-only.
         Use this to find out what's already wired up before deciding whether to add a new server,
-        or to confirm a previously-added server is healthy. Headers are redacted in the result.
+        or to confirm a previously-added server is healthy. enabled_for_assistant is false when a
+        server is connected and listed here but not wired up for you to call - its tools will
+        fail as not found until it's enabled (mcp_add enables the server it creates for you
+        automatically). Headers are redacted in the result.
     """.trimIndent().replace("\n", " "),
     parameters = { InputSchema.Obj(properties = buildJsonObject {}, required = emptyList()) },
     execute = {
-        val servers = settingsStore.settingsFlow.value.mcpServers
+        val settings = settingsStore.settingsFlow.value
+        val servers = settings.mcpServers
         val statuses = manager.syncingStatus.value
+        // #88: resolved the same way McpManager.getAllAvailableTools() resolves it, so this
+        // matches what actually gets dispatched. Not-enabled servers stay in the listing —
+        // this is the diagnostic that makes "connected + listed but zero callable tools"
+        // visible instead of a silent gap.
+        val assistantServerIds = settings.getCurrentAssistant().mcpServers
         val arr = buildJsonArray {
             servers.forEach { config ->
-                add(serverViewEnvelope(config, statuses[config.id]))
+                add(
+                    serverViewEnvelope(config, statuses[config.id]) {
+                        put("enabled_for_assistant", isEnabledForAssistant(config.id, assistantServerIds))
+                    }
+                )
             }
         }
         listOf(UIMessagePart.Text(buildJsonObject { put("servers", arr) }.toString()))
@@ -285,9 +323,12 @@ fun mcpGetTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
         val rawId = params["id"]?.jsonPrimitive?.contentOrNull
         val serverId = parseUuid(rawId)
             ?: return@Tool errEnv("invalid_id", "id is required and must be a valid UUID; got '$rawId'")
-        val config = settingsStore.settingsFlow.value.mcpServers.firstOrNull { it.id == serverId }
+        val settings = settingsStore.settingsFlow.value
+        val config = settings.mcpServers.firstOrNull { it.id == serverId }
             ?: return@Tool errEnv("unknown_mcp_server_id", "no MCP server registered with id $serverId")
         val status = manager.syncingStatus.value[serverId]
+        // #88: same resolution as mcp_list / McpManager.getAllAvailableTools().
+        val enabledForAssistant = isEnabledForAssistant(serverId, settings.getCurrentAssistant().mcpServers)
         val toolList = buildJsonArray {
             config.commonOptions.tools.forEach { tool ->
                 addJsonObject {
@@ -298,7 +339,14 @@ fun mcpGetTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
                 }
             }
         }
-        listOf(UIMessagePart.Text(serverViewEnvelope(config, status) { put("tools", toolList) }.toString()))
+        listOf(
+            UIMessagePart.Text(
+                serverViewEnvelope(config, status) {
+                    put("enabled_for_assistant", enabledForAssistant)
+                    put("tools", toolList)
+                }.toString()
+            )
+        )
     },
 )
 
@@ -402,7 +450,18 @@ fun mcpAddTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
             enabled = enabled,
             headers = headers,
         )
-        settingsStore.update { old -> old.copy(mcpServers = old.mcpServers + config) }
+        settingsStore.update { old ->
+            // #88: without this the server connects and lists tools but is invisible to
+            // getAllAvailableTools(), so every call fails NOT_FOUND.
+            old.copy(
+                mcpServers = old.mcpServers + config,
+                assistants = addServerToCallingAssistant(
+                    assistants = old.assistants,
+                    callingAssistantId = old.getCurrentAssistant().id,
+                    newServerId = newId,
+                ),
+            )
+        }
         if (enabled) {
             manager.addClient(config)
             awaitTerminal(manager, newId, timeoutSec * 1000L)
@@ -415,7 +474,14 @@ fun mcpAddTool(settingsStore: SettingsStore, manager: McpManager): Tool = Tool(
         // under the next poll would be a worse UX than leaving a row marked CONNECTING.
         if (finalStatus is McpStatus.Error) {
             manager.removeClient(config)
-            settingsStore.update { s -> s.copy(mcpServers = s.mcpServers.filter { it.id != newId }) }
+            settingsStore.update { s ->
+                s.copy(
+                    mcpServers = s.mcpServers.filter { it.id != newId },
+                    // Undo the calling-assistant enable from above so a rolled-back server
+                    // doesn't leave a dangling reference in any assistant's set.
+                    assistants = s.assistants.map { a -> a.copy(mcpServers = a.mcpServers - newId) },
+                )
+            }
             val (kind, hint) = classifyMcpError(finalStatus.message)
             return@Tool errEnv(
                 kind,
@@ -656,8 +722,11 @@ fun mcpListToolsTool(settingsStore: SettingsStore, manager: McpManager): Tool = 
     description = """
         List the MCP tools exposed by one server (when id is provided), or aggregated across
         all enabled servers (when id is null/absent). Each entry includes server name + id,
-        tool name, description, whether it requires approval, and (when the server supplied
-        one) the tool's input_schema describing its argument shape.
+        tool name, dispatchable_name (the exact name to pass when calling this tool -
+        tool_name alone is not callable), enabled_for_assistant (false means this server is
+        connected and listed but not wired up for you - use mcp_add or ask the user to enable
+        it in Settings before calling), whether it requires approval, and (when the server
+        supplied one) the tool's input_schema describing its argument shape.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -670,7 +739,8 @@ fun mcpListToolsTool(settingsStore: SettingsStore, manager: McpManager): Tool = 
     execute = { args ->
         val params = args.jsonObject
         val rawId = params["id"]?.jsonPrimitive?.contentOrNull
-        val all = settingsStore.settingsFlow.value.mcpServers
+        val settings = settingsStore.settingsFlow.value
+        val all = settings.mcpServers
         val targets = if (rawId.isNullOrBlank()) {
             all.filter { it.commonOptions.enable }
         } else {
@@ -680,13 +750,23 @@ fun mcpListToolsTool(settingsStore: SettingsStore, manager: McpManager): Tool = 
                 ?: return@Tool errEnv("unknown_mcp_server_id", "no MCP server registered with id $serverId")
             listOf(one)
         }
+        // #88: same resolution as mcp_list / McpManager.getAllAvailableTools(). Not-enabled
+        // servers stay in the listing (kept above, unchanged) — this only adds the flag so
+        // the gap is diagnosable rather than filtering it away.
+        val assistantServerIds = settings.getCurrentAssistant().mcpServers
         val arr = buildJsonArray {
             for (server in targets) {
+                val enabledForAssistant = isEnabledForAssistant(server.id, assistantServerIds)
                 for (tool in server.commonOptions.tools) {
                     addJsonObject {
                         put("server_id", server.id.toString())
                         put("server_name", server.commonOptions.name)
                         put("tool_name", tool.name)
+                        // The name to actually call this tool by — built by the exact same
+                        // helper the registration path uses, so a model can never end up
+                        // with a name that was never offered (#88).
+                        put("dispatchable_name", buildMcpToolName(server.id, server.commonOptions.name, tool.name))
+                        put("enabled_for_assistant", enabledForAssistant)
                         put("description", tool.description ?: "")
                         put("enabled", tool.enable)
                         put("needs_approval", tool.needsApproval)

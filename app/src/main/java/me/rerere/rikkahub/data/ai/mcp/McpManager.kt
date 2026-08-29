@@ -158,3 +158,18 @@ class McpManager(
         return UIMessagePart.Image(url = filesManager.getFile(entity).toUri().toString())
     }
 }
+
+/**
+ * Build the model-facing dispatchable name for one MCP tool:
+ * `mcp__<slug>_<serverName>__<toolName>`. Shared by the tool-registration path (ChatService's
+ * inline tool assembly + rerun path) and the mcp_list_tools diagnostic listing
+ * (McpControlTools) so the two can never drift (#88) — a name shown to the model as "this is
+ * what you call" must be byte-identical to the name the dispatch table was actually built
+ * with. Keep the `mcp__` prefix intact: HardlineCommandGuard and ToolApprovalDefaults both
+ * branch on `startsWith("mcp__")`. The slug is the first 8 hex chars of the server id with
+ * dashes stripped, so two identically-named servers never collide. Pure.
+ */
+fun buildMcpToolName(serverId: Uuid, serverName: String, toolName: String): String {
+    val serverSlug = serverId.toString().take(8).replace("-", "")
+    return "mcp__" + serverSlug + "_" + serverName + "__" + toolName
+}

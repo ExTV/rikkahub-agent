@@ -927,9 +927,37 @@ class GenerationHandler(
                             )
                             return@forEach
                         }
+                        // Resolve the tool def BEFORE the runCatching block, same reason as
+                        // parsedArgs above: this is not a random tool-body throw, so it gets
+                        // its own structured envelope naming exactly what was called and what
+                        // was actually available — rather than the generic 500-char-capped
+                        // exception message the runCatching/.onFailure below produces (#88:
+                        // this is the self-diagnosing surface for a server that connects and
+                        // lists tools but contributes zero entries to the dispatch list, e.g.
+                        // a newly mcp_add-ed server never enabled for this assistant).
+                        val toolDef = toolsInternal.find { toolDef -> toolDef.name == tool.toolName }
+                        if (toolDef == null) {
+                            Log.w(TAG, "tool ${tool.toolName} not found among ${toolsInternal.size} tools available this turn")
+                            executedTools += tool.copy(
+                                output = listOf(
+                                    UIMessagePart.Text(
+                                        json.encodeToString(buildJsonObject {
+                                            put("error", JsonPrimitive("tool_not_found"))
+                                            put(
+                                                "detail",
+                                                JsonPrimitive("Tool '${tool.toolName}' was called but is not among the tools available this turn."),
+                                            )
+                                            put(
+                                                "tools_available_this_turn",
+                                                JsonPrimitive(toolsInternal.joinToString(", ") { it.name }.take(1500)),
+                                            )
+                                        })
+                                    )
+                                )
+                            )
+                            return@forEach
+                        }
                         runCatching {
-                            val toolDef = toolsInternal.find { toolDef -> toolDef.name == tool.toolName }
-                                ?: error("Tool ${tool.toolName} not found")
                             val args = parsedArgs.getOrThrow()
                             if (BuildConfig.DEBUG) {
                                 Log.i(TAG, "generateText: executing tool ${toolDef.name} with args: ${redactSecrets(args)}")
