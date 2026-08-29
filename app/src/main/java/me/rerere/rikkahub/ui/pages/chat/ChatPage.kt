@@ -2,6 +2,7 @@ package me.rerere.rikkahub.ui.pages.chat
 
 import android.net.Uri
 import android.util.Log
+import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -10,7 +11,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DrawerState
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
@@ -19,13 +19,11 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PermanentNavigationDrawer
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.adaptive.currentWindowDpSize
@@ -86,8 +84,6 @@ import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.context.Navigator
 import me.rerere.rikkahub.ui.hooks.ChatInputState
-import me.rerere.rikkahub.ui.hooks.EditStateContent
-import me.rerere.rikkahub.ui.hooks.useEditState
 import me.rerere.rikkahub.utils.ImageUtils
 import me.rerere.rikkahub.utils.base64Decode
 import me.rerere.rikkahub.utils.isAllowedFileType
@@ -321,9 +317,6 @@ private fun ChatPageContent(
                     onClickMenu = {
                         previewMode = !previewMode
                     },
-                    onUpdateTitle = {
-                        vm.updateTitle(it)
-                    }
                 )
             },
             bottomBar = {
@@ -739,13 +732,12 @@ private fun TopBar(
     previewMode: Boolean,
     onClickMenu: () -> Unit,
     onNewChat: () -> Unit,
-    onUpdateTitle: (String) -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
-    val titleState = useEditState<String> {
-        onUpdateTitle(it)
-    }
+    // 与抽屉的 Rename 菜单项共享同一个重命名对话框状态，见 ChatDrawerVM.conversationToRename
+    val activity = LocalContext.current as ComponentActivity
+    val drawerVm: ChatDrawerVM = koinViewModel(viewModelStoreOwner = activity)
 
     TopAppBar(
         colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
@@ -765,7 +757,7 @@ private fun TopBar(
             Surface(
                 onClick = {
                     if (conversation.messageNodes.isNotEmpty()) {
-                        titleState.open(conversation.title)
+                        drawerVm.requestRenameConversation(conversation)
                     } else {
                         toaster.show(editTitleWarning, type = ToastType.Warning)
                     }
@@ -814,40 +806,4 @@ private fun TopBar(
             }
         },
     )
-    titleState.EditStateContent { title, onUpdate ->
-        AlertDialog(
-            onDismissRequest = {
-                titleState.dismiss()
-            },
-            title = {
-                Text(stringResource(R.string.chat_page_edit_title))
-            },
-            text = {
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = onUpdate,
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        titleState.confirm()
-                    }
-                ) {
-                    Text(stringResource(R.string.chat_page_save))
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        titleState.dismiss()
-                    }
-                ) {
-                    Text(stringResource(R.string.chat_page_cancel))
-                }
-            }
-        )
-    }
 }

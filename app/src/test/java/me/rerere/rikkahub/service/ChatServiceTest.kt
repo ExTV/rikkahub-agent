@@ -7,19 +7,24 @@ import me.rerere.ai.provider.BuiltInTools
 import me.rerere.ai.provider.CustomBody
 import me.rerere.ai.provider.CustomHeader
 import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.AutoCompactionThresholdMode
+import me.rerere.rikkahub.data.datastore.DEFAULT_AUTO_MODEL_ID
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.ConversationCompaction
 import me.rerere.rikkahub.data.model.MessageNode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.Instant
 import kotlin.uuid.Uuid
 
 class ChatServiceTest {
@@ -236,5 +241,126 @@ class ChatServiceTest {
         val model = Model(tools = setOf(BuiltInTools.UrlContext))
 
         assertTrue(shouldUseExternalWebSearch(assistant, model))
+    }
+
+    // --- resolveCompressionModel: Compress Model "Auto" resolving to a disabled provider -----
+
+    @Test
+    fun `auto with the built-in provider disabled resolves to the current chat model`() {
+        val chatModel = Model(modelId = "gpt-5")
+        val autoModel = Model(id = DEFAULT_AUTO_MODEL_ID, modelId = "auto")
+        val rikkaHub = ProviderSetting.OpenAI(enabled = false, name = "RikkaHub", models = listOf(autoModel))
+        val chatProvider = ProviderSetting.OpenAI(enabled = true, name = "OpenAI", models = listOf(chatModel))
+        val settings = Settings(
+            compressModelId = autoModel.id,
+            chatModelId = chatModel.id,
+            providers = listOf(rikkaHub, chatProvider),
+        )
+
+        assertEquals(chatModel, resolveCompressionModel(settings))
+    }
+
+    @Test
+    fun `auto with the current chat model's provider also disabled resolves to a model from an enabled provider`() {
+        val chatModel = Model(modelId = "gpt-5")
+        val autoModel = Model(id = DEFAULT_AUTO_MODEL_ID, modelId = "auto")
+        val fallbackModel = Model(modelId = "fallback-model")
+        val rikkaHub = ProviderSetting.OpenAI(enabled = false, name = "RikkaHub", models = listOf(autoModel))
+        val chatProvider = ProviderSetting.OpenAI(enabled = false, name = "OpenAI", models = listOf(chatModel))
+        val enabledProvider = ProviderSetting.OpenAI(enabled = true, name = "Groq", models = listOf(fallbackModel))
+        val settings = Settings(
+            compressModelId = autoModel.id,
+            chatModelId = chatModel.id,
+            providers = listOf(rikkaHub, chatProvider, enabledProvider),
+        )
+
+        assertEquals(fallbackModel, resolveCompressionModel(settings))
+    }
+
+    @Test
+    fun `no enabled provider at all resolves to null`() {
+        val chatModel = Model(modelId = "gpt-5")
+        val autoModel = Model(id = DEFAULT_AUTO_MODEL_ID, modelId = "auto")
+        val rikkaHub = ProviderSetting.OpenAI(enabled = false, name = "RikkaHub", models = listOf(autoModel))
+        val chatProvider = ProviderSetting.OpenAI(enabled = false, name = "OpenAI", models = listOf(chatModel))
+        val settings = Settings(
+            compressModelId = autoModel.id,
+            chatModelId = chatModel.id,
+            providers = listOf(rikkaHub, chatProvider),
+        )
+
+        assertNull(resolveCompressionModel(settings))
+        // generateAndStoreCompaction throws this exact message when resolution fails, and it
+        // names the setting to change so the resulting error card is actionable.
+        assertTrue(compressionModelUnavailableMessage().contains("Compress Model"))
+    }
+
+    @Test
+    fun `a configured non-auto model on an enabled provider is used as-is`() {
+        val configured = Model(modelId = "claude")
+        val provider = ProviderSetting.OpenAI(enabled = true, name = "Anthropic", models = listOf(configured))
+        val settings = Settings(
+            compressModelId = configured.id,
+            providers = listOf(provider),
+        )
+
+        assertEquals(configured, resolveCompressionModel(settings))
+    }
+
+    // --- automaticCompactionNoOpResult: a non-advancing boundary must not abort the turn -----
+
+    @Test
+    fun `a non-advancing boundary with an existing compaction returns that compaction`() {
+        val existing = ConversationCompaction(
+            conversationId = Uuid.random(),
+            summary = "prior summary",
+            tailStartNodeId = Uuid.random(),
+            sourceEndNodeId = Uuid.random(),
+            summaryModelId = Uuid.random(),
+            isAuto = true,
+            sourceTokenEstimate = 500,
+            createdAt = Instant.EPOCH,
+        )
+
+        assertSame(existing, automaticCompactionNoOpResult(existing))
+    }
+
+    @Test
+    fun `a non-advancing boundary with no existing compaction still throws`() {
+        assertThrows(IllegalStateException::class.java) {
+            automaticCompactionNoOpResult(null)
+        }
+    }
+
+    // --- recordAutoCompactionIfCreated: a no-op must not surface as newlyCreatedAutoCompaction
+
+    @Test
+    fun `a no-op compaction result is not recorded as newly created`() {
+        var recorded: ConversationCompaction? = null
+
+        val result = recordAutoCompactionIfCreated(null) { recorded = it }
+
+        assertNull(result)
+        assertNull(recorded)
+    }
+
+    @Test
+    fun `a freshly created compaction result is recorded as newly created`() {
+        val fresh = ConversationCompaction(
+            conversationId = Uuid.random(),
+            summary = "new summary",
+            tailStartNodeId = Uuid.random(),
+            sourceEndNodeId = Uuid.random(),
+            summaryModelId = Uuid.random(),
+            isAuto = true,
+            sourceTokenEstimate = 500,
+            createdAt = Instant.EPOCH,
+        )
+        var recorded: ConversationCompaction? = null
+
+        val result = recordAutoCompactionIfCreated(fresh) { recorded = it }
+
+        assertSame(fresh, result)
+        assertSame(fresh, recorded)
     }
 }

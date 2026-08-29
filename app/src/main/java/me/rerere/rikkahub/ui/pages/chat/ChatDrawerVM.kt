@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.Folder
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
@@ -48,6 +49,11 @@ class ChatDrawerVM(
     // 当前选中的文件夹筛选，null 表示「未归类」视图
     private val _selectedFolderId = MutableStateFlow<Uuid?>(null)
     val selectedFolderId: StateFlow<Uuid?> = _selectedFolderId.asStateFlow()
+
+    // 重命名对话框的目标会话，跨抽屉的两个入口（菜单项 + 顶部标题点击）共享，
+    // 保证两者打开同一个对话框、走同一条提交路径
+    private val _conversationToRename = MutableStateFlow<Conversation?>(null)
+    val conversationToRename: StateFlow<Conversation?> = _conversationToRename.asStateFlow()
 
     // 当前助手的文件夹列表（Room Flow，增删改自动刷新）
     val folders: StateFlow<List<Folder>> = assistantIdFlow
@@ -183,8 +189,17 @@ class ChatDrawerVM(
         }
     }
 
+    fun requestRenameConversation(conversation: Conversation) {
+        _conversationToRename.value = conversation
+    }
+
+    fun dismissRenameConversation() {
+        _conversationToRename.value = null
+    }
+
     fun renameConversation(conversationId: Uuid, title: String) {
         val trimmed = title.trim()
+        _conversationToRename.value = null
         if (trimmed.isEmpty()) return
         viewModelScope.launch {
             // 经 ChatService 重命名：活跃会话会先同步内存态，避免后续整对象保存覆盖标题

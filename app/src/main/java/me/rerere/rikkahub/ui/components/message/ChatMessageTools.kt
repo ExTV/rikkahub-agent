@@ -107,6 +107,23 @@ fun ChainOfThoughtScope.ChatMessageServerToolStep(tool: UIMessagePart.ServerTool
     )
 }
 
+/**
+ * Parses a tool's output text as JSON for [ToolUIContext.content]. Returns null both
+ * when the tool hasn't executed yet and when the output isn't valid JSON (e.g. a
+ * truncation notice - see `maybeTruncateToolOutput`), rather than collapsing a parse
+ * failure into an empty [JsonObject]: that used to make bespoke card renderers (e.g.
+ * search) read "no results" from a result that was never parsed, showing an empty
+ * card instead of falling back to the raw-text preview (#93).
+ */
+internal fun parseToolOutputContent(tool: UIMessagePart.Tool): JsonElement? {
+    if (!tool.isExecuted) return null
+    return runCatching {
+        JsonInstant.parseToJsonElement(
+            tool.output.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
+        )
+    }.getOrNull()
+}
+
 @Composable
 fun ChainOfThoughtScope.ChatMessageToolStep(
     tool: UIMessagePart.Tool,
@@ -130,15 +147,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
         ToolUIContext(
             tool = tool,
             arguments = tool.inputAsJson(),
-            content = if (tool.isExecuted) {
-                runCatching {
-                    JsonInstant.parseToJsonElement(
-                        tool.output.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
-                    )
-                }.getOrElse { JsonObject(emptyMap()) }
-            } else {
-                null
-            },
+            content = parseToolOutputContent(tool),
             loading = loading,
         )
     }
@@ -356,7 +365,10 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
         } else {
             null
         },
-        onClick = if (context.content != null || isPending || images.isNotEmpty() || webviewParts.isNotEmpty()) {
+        // A parse failure (e.g. a truncation notice) leaves context.content null even
+        // though the tool executed and has raw text worth showing in the preview sheet -
+        // gate on tool.isExecuted instead so that case still gets a tap target (#93).
+        onClick = if (tool.isExecuted || isPending || images.isNotEmpty() || webviewParts.isNotEmpty()) {
             { showResult = true }
         } else {
             null
