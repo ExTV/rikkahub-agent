@@ -56,7 +56,7 @@ internal fun lua(): Language {
 
     return Language(
         name = "Lua",
-        aliases = setOf("lua", "pluto"),
+        aliases = setOf("lua", "pluto", "luau"),
         root = mode {
             keywords = luaKeywords
             contains = comments + listOf(

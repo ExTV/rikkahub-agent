@@ -19,7 +19,7 @@ private val TEXT_EXTENSIONS = setOf(
     "properties", "env", "csv", "tsv", "log", "html", "htm", "css", "scss", "sass", "less",
     "js", "mjs", "cjs", "ts", "tsx", "jsx", "kt", "kts", "java", "py", "rb", "go", "rs", "c", "h",
     "cpp", "hpp", "cc", "cs", "swift", "sh", "bash", "zsh", "gradle", "sql", "gitignore",
-    "dockerfile", "lua", "php", "pl", "r", "dart", "vue", "svelte", "gql", "graphql", "proto",
+    "dockerfile", "lua", "luau", "php", "pl", "r", "dart", "vue", "svelte", "gql", "graphql", "proto",
     "diff", "patch", "srt", "vtt",
 )
 
