@@ -169,7 +169,7 @@ fun launchAppTool(
 
 fun listInstalledAppsTool(context: Context): Tool = Tool(
     name = "list_installed_apps",
-    description = "List installed apps as {label, package, has_launcher}. Default: launcher-visible only. With `filter` or `include_no_launcher=true`, also returns service-only addons (Termux:API, Termux:Boot, etc.) that have no app-drawer entry.",
+    description = "List installed apps as {label, package, version, has_launcher}. Default: launcher-visible only. With `filter` or `include_no_launcher=true`, also returns service-only addons (Termux:API, Termux:Boot, etc.) that have no app-drawer entry. Optional `include_permissions` adds each app's requested permissions.",
     parameters = {
         InputSchema.Obj(
             properties = buildJsonObject {
@@ -189,6 +189,10 @@ fun listInstalledAppsTool(context: Context): Tool = Tool(
                     put("type", "boolean")
                     put("description", "If true, also returns packages that have no launcher activity (service-only addons). Auto-true when filter is non-empty.")
                 })
+                put("include_permissions", buildJsonObject {
+                    put("type", "boolean")
+                    put("description", "If true, each row also lists the permissions the app requests. Output grows a lot; combine with `filter` or a small `limit`.")
+                })
             }
         )
     },
@@ -201,6 +205,8 @@ fun listInstalledAppsTool(context: Context): Tool = Tool(
             ?.toIntOrNull()?.coerceIn(1, 1000) ?: 200
         val includeNoLauncher = (input.jsonObject["include_no_launcher"]?.jsonPrimitive?.contentOrNull
             ?.toBooleanStrictOrNull() ?: false) || filter != null
+        val includePermissions = input.jsonObject["include_permissions"]?.jsonPrimitive?.contentOrNull
+            ?.toBooleanStrictOrNull() ?: false
 
         val pm = context.packageManager
 
@@ -212,7 +218,21 @@ fun listInstalledAppsTool(context: Context): Tool = Tool(
         val launcherResolved = pm.queryIntentActivities(launcherIntent, 0)
         val launcherPkgs = launcherResolved.mapNotNull { it.activityInfo?.packageName }.toHashSet()
 
-        data class Row(val label: String, val pkg: String, val hasLauncher: Boolean)
+        data class Row(
+            val label: String,
+            val pkg: String,
+            val hasLauncher: Boolean,
+            val version: String,
+            val permissions: List<String>?,
+        )
+
+        fun versionOf(pkg: String): String =
+            runCatching { pm.getPackageInfo(pkg, 0).versionName }.getOrNull() ?: ""
+
+        fun permissionsOf(pkg: String): List<String>? =
+            if (!includePermissions) null else runCatching {
+                pm.getPackageInfo(pkg, PackageManager.GET_PERMISSIONS).requestedPermissions?.toList()
+            }.getOrNull() ?: emptyList()
 
         val rows = mutableListOf<Row>()
         val seen = mutableSetOf<String>()
@@ -236,7 +256,7 @@ fun listInstalledAppsTool(context: Context): Tool = Tool(
             if (filter != null && !label.lowercase().contains(filter) && !pkg.lowercase().contains(filter)) {
                 continue
             }
-            rows.add(Row(label, pkg, hasLauncher = true))
+            rows.add(Row(label, pkg, hasLauncher = true, version = versionOf(pkg), permissions = permissionsOf(pkg)))
             if (rows.size >= limit) break
         }
 
@@ -260,7 +280,15 @@ fun listInstalledAppsTool(context: Context): Tool = Tool(
                 if (filter != null && !label.lowercase().contains(filter) && !pkg.lowercase().contains(filter)) {
                     continue
                 }
-                rows.add(Row(label, pkg, hasLauncher = pkg in launcherPkgs))
+                rows.add(
+                    Row(
+                        label,
+                        pkg,
+                        hasLauncher = pkg in launcherPkgs,
+                        version = versionOf(pkg),
+                        permissions = permissionsOf(pkg),
+                    )
+                )
                 if (rows.size >= limit) break
             }
         }
@@ -274,7 +302,13 @@ fun listInstalledAppsTool(context: Context): Tool = Tool(
                     addJsonObject {
                         put("label", row.label)
                         put("package", row.pkg)
+                        put("version", row.version)
                         put("has_launcher", row.hasLauncher)
+                        if (includePermissions) {
+                            put("permissions", buildJsonArray {
+                                row.permissions?.forEach { add(it) }
+                            })
+                        }
                     }
                 }
             })
