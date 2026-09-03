@@ -26,6 +26,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import me.rerere.rikkahub.R
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
@@ -107,15 +113,20 @@ private fun JsonObjectNode(
     val entries = remember(obj) { obj.entries.toList() }
 
     Column {
+        val expandStateDesc = stringResource(if (expanded) R.string.code_block_collapse else R.string.code_block_expand)
         Row(
             modifier = Modifier
+                .semantics(mergeDescendants = true) {
+                    role = Role.Button
+                    stateDescription = expandStateDesc
+                }
                 .clickable { expanded = !expanded }
                 .padding(vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
                 imageVector = if (expanded) HugeIcons.ArrowDown01 else HugeIcons.ArrowRight01,
-                contentDescription = null,
+                contentDescription = expandStateDesc,
                 modifier = Modifier
                     .padding(start = (depth * 16).dp)
                     .size(14.dp),
@@ -170,15 +181,20 @@ private fun JsonArrayNode(
     var expanded by rememberSaveable { mutableStateOf(depth < initialExpandLevel) }
 
     Column {
+        val expandStateDesc = stringResource(if (expanded) R.string.code_block_collapse else R.string.code_block_expand)
         Row(
             modifier = Modifier
+                .semantics(mergeDescendants = true) {
+                    role = Role.Button
+                    stateDescription = expandStateDesc
+                }
                 .clickable { expanded = !expanded }
                 .padding(vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
                 imageVector = if (expanded) HugeIcons.ArrowDown01 else HugeIcons.ArrowRight01,
-                contentDescription = null,
+                contentDescription = expandStateDesc,
                 modifier = Modifier
                     .padding(start = (depth * 16).dp)
                     .size(14.dp),

@@ -610,7 +610,7 @@ private fun TopBar(
                         scope.launch { drawerState.open() }
                     }
                 ) {
-                    Icon(HugeIcons.Menu03, stringResource(R.string.accessibility_messages))
+                    Icon(HugeIcons.Menu03, stringResource(R.string.menu))
                 }
             }
         },

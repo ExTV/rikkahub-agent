@@ -28,6 +28,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -332,9 +334,13 @@ private fun ActionRow(index: Int, action: ParsedAction) {
             )
         }
         if (action.argsBlock.isNotBlank() && action.argsBlock != "{}") {
+            val expandActionLabel = if (expanded) stringResource(R.string.code_block_collapse) else stringResource(R.string.code_block_expand)
             TextButton(
                 onClick = { expanded = !expanded },
                 contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                modifier = Modifier.semantics {
+                    contentDescription = "$index. ${action.tool} ($expandActionLabel)"
+                }
             ) {
                 Text(
                     if (expanded) stringResource(R.string.setting_page_scheduled_jobs_hide_args)

@@ -2134,4 +2134,5 @@
   <string name="setting_tts_page_default_playback_speed_description">在本機套用至每個 TTS 提供者，不變更其合成設定。</string>
   <string name="search_page_scope_current_assistant">目前助手</string>
   <string name="search_page_scope_all_assistants">全部助手</string>
+  <string name="table">表格</string>
 </resources>

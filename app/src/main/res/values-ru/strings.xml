@@ -1871,4 +1871,5 @@
   <string name="setting_tts_page_default_playback_speed_description">Применяется локально к каждому TTS-провайдеру без изменения его настроек синтеза.</string>
   <string name="search_page_scope_current_assistant">Текущий ассистент</string>
   <string name="search_page_scope_all_assistants">Все ассистенты</string>
+  <string name="table">Таблица</string>
 </resources>

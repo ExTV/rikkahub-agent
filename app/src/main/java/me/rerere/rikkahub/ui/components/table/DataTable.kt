@@ -17,6 +17,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.CollectionInfo
+import androidx.compose.ui.semantics.CollectionItemInfo
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.collectionInfo
+import androidx.compose.ui.semantics.collectionItemInfo
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.isTraversalGroup
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.traversalIndex
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -63,6 +72,13 @@ fun DataTable(
             .then(
                 if (outerBorder != null) Modifier.border(outerBorder, shape) else Modifier
             )
+            .semantics {
+                isTraversalGroup = true
+                collectionInfo = CollectionInfo(
+                    rowCount = rows.size + 1,
+                    columnCount = max(headers.size, rows.maxOfOrNull { it.size } ?: 0)
+                )
+            }
     ) {
         // 捕获滚动视口的可用宽度，用于在内容较窄时把列宽拉伸铺满
         val viewportMaxWidth = constraints.maxWidth
@@ -89,7 +105,8 @@ fun DataTable(
                         padding = cellPadding,
                         border = cellBorder,
                         background = headerBackground,
-                        alignment = cellAlignment
+                        alignment = cellAlignment,
+                        modifier = Modifier.clearAndSetSemantics {}
                     ) {
                         headers.getOrNull(c)?.invoke()
                     }
@@ -107,7 +124,13 @@ fun DataTable(
             fun subcomposeBodyOnce(r: Int, c: Int): Placeable {
                 val bg = if (zebraStriping && r % 2 == 1) surfaceContainer else Color.Transparent
                 val measurables = subcompose("b1_${r}_$c") {
-                    CellBox(padding = cellPadding, border = cellBorder, background = bg, alignment = cellAlignment) {
+                    CellBox(
+                        padding = cellPadding,
+                        border = cellBorder,
+                        background = bg,
+                        alignment = cellAlignment,
+                        modifier = Modifier.clearAndSetSemantics {}
+                    ) {
                         rows[r].getOrNull(c)?.invoke()
                     }
                 }
@@ -172,7 +195,17 @@ fun DataTable(
                         padding = cellPadding,
                         border = cellBorder,
                         background = headerBackground,
-                        alignment = cellAlignment
+                        alignment = cellAlignment,
+                        modifier = Modifier.semantics {
+                            heading()
+                            traversalIndex = c.toFloat()
+                            collectionItemInfo = CollectionItemInfo(
+                                rowIndex = 0,
+                                rowSpan = 1,
+                                columnIndex = c,
+                                columnSpan = 1
+                            )
+                        }
                     ) {
                         headers.getOrNull(c)?.invoke()
                     }
@@ -186,7 +219,21 @@ fun DataTable(
                 val bg =
                     if (zebraStriping && r % 2 == 1) surfaceContainer else Color.Transparent
                 val measurables = subcompose("b2_${r}_$c") {
-                    CellBox(padding = cellPadding, border = cellBorder, background = bg, alignment = cellAlignment) {
+                    CellBox(
+                        padding = cellPadding,
+                        border = cellBorder,
+                        background = bg,
+                        alignment = cellAlignment,
+                        modifier = Modifier.semantics {
+                            traversalIndex = ((r + 1) * columnCount + c).toFloat()
+                            collectionItemInfo = CollectionItemInfo(
+                                rowIndex = r + 1,
+                                rowSpan = 1,
+                                columnIndex = c,
+                                columnSpan = 1
+                            )
+                        }
+                    ) {
                         rows[r].getOrNull(c)?.invoke()
                     }
                 }
@@ -226,10 +273,11 @@ private fun CellBox(
     border: BorderStroke?,
     background: Color,
     alignment: Alignment,
+    modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .then(if (background != Color.Transparent) Modifier.background(background) else Modifier)
             .then(if (border != null) Modifier.border(border) else Modifier)
             .padding(padding),

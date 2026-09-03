@@ -2108,4 +2108,5 @@
   <string name="setting_update_reminder_pause_days">%1$d أيام</string>
   <string name="setting_update_reminder_paused_until">متوقف مؤقتًا حتى %1$s</string>
   <string name="setting_update_reminder_resume_now">استئناف الآن</string>
+  <string name="table">جدول</string>
 </resources>

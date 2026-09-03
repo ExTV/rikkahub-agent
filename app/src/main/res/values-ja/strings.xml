@@ -1871,4 +1871,5 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="setting_tts_page_default_playback_speed_description">すべてのTTSプロバイダーにローカルで適用され、合成設定は変更されません。</string>
   <string name="search_page_scope_current_assistant">現在のアシスタント</string>
   <string name="search_page_scope_all_assistants">すべてのアシスタント</string>
+  <string name="table">テーブル</string>
 </resources>

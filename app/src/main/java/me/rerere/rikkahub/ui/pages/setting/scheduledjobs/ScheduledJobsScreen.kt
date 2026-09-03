@@ -29,6 +29,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontStyle
@@ -138,7 +140,7 @@ private fun ScheduledJobRow(
     ListItem(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onTap() }
+            .clickable(onClickLabel = stringResource(R.string.edit)) { onTap() }
             .padding(horizontal = 8.dp),
         headlineContent = { Text(job.name) },
         supportingContent = {
@@ -149,7 +151,13 @@ private fun ScheduledJobRow(
             )
         },
         trailingContent = {
-            Switch(checked = job.enabled, onCheckedChange = onToggle)
+            Switch(
+                checked = job.enabled,
+                onCheckedChange = onToggle,
+                modifier = Modifier.semantics {
+                    contentDescription = job.name
+                }
+            )
         },
     )
     HorizontalDivider()

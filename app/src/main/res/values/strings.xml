@@ -2486,4 +2486,5 @@
   <string name="doctor_detail_images_orphan">%1$d of %2$d generated image record(s) point at a file that no longer exists on disk.</string>
   <string name="doctor_could_not_open">Could not open: %1$s</string>
   <string name="doctor_clipboard_label">RikkaHub diagnostic report</string>
+  <string name="table">Table</string>
 </resources>

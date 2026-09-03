@@ -157,14 +157,14 @@ fun SettingMcpPage(vm: SettingVM = koinViewModel()) {
                             showImportDialog = true
                         }
                     ) {
-                        Icon(HugeIcons.FileImport, null)
+                        Icon(HugeIcons.FileImport, stringResource(R.string.setting_mcp_page_import_title))
                     }
                     IconButton(
                         onClick = {
                             creationState.open(McpServerConfig.StreamableHTTPServer())
                         }
                     ) {
-                        Icon(HugeIcons.Add01, null)
+                        Icon(HugeIcons.Add01, stringResource(R.string.add))
                     }
                 },
                 scrollBehavior = scrollBehavior,
@@ -316,7 +316,7 @@ private fun McpServerItem(
                         onDelete()
                     }
                 ) {
-                    Icon(HugeIcons.Delete01, null)
+                    Icon(HugeIcons.Delete01, stringResource(R.string.delete))
                 }
             }
         },
@@ -434,7 +434,10 @@ private fun McpServerItem(
                         onEdit(item)
                     }
                 ) {
-                    Icon(HugeIcons.Settings03, null)
+                    Icon(
+                        imageVector = HugeIcons.Settings03,
+                        contentDescription = stringResource(R.string.edit)
+                    )
                 }
             }
         }
