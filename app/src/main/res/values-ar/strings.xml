@@ -1469,7 +1469,7 @@
   <string name="setting_asr_configure_silence_duration_desc">مدة الصمت التي تُنهي الدور، بالميلي ثانية</string>
   <string name="setting_asr_configure_dashscope_api_key_desc">مفتاح DashScope API</string>
   <string name="setting_asr_configure_dashscope_websocket_desc">نقطة نهاية websocket الوقت الفعلي لـ DashScope</string>
-  <string name="setting_asr_configure_dashscope_vad_desc">حساسية VAD للخادم، عيّن 0 لتعطيل VAD</string>
+  <string name="setting_asr_configure_dashscope_vad_desc">عتبة كشف VAD على الخادم. القيمة الموصى بها: 0.0؛ النطاق: من -1 إلى 1.</string>
   <string name="setting_asr_configure_volcengine_api_key_desc">مفتاح Volcengine API (X-Api-Key)</string>
   <string name="setting_asr_configure_volcengine_websocket_desc">نقطة نهاية التعرف على الكلام المتدفق لـ Volcengine</string>
   <string name="setting_asr_configure_resource_id">معرّف المورد</string>
@@ -1687,7 +1687,7 @@
   <string name="assistant_page_local_tools_keyboard_setup_message">يتطلب التحكم بلوحة المفاتيح تثبيت تطبيق agent-keyboard المساعد وتعيينه كلوحة مفاتيح نشطة. قم بتثبيته، ثم انتقل إلى الإعدادات &gt; النظام &gt; اللغات والإدخال &gt; لوحة المفاتيح على الشاشة واقتطع إلى agent-keyboard. بدون كلاهما، ستعيد كل أداة لوحة مفاتيح خطأً.</string>
   <string name="assistant_page_local_tools_keyboard_status_not_installed">تطبيق agent-keyboard غير مثبت</string>
   <string name="assistant_page_local_tools_keyboard_status_installed">تم تثبيت agent-keyboard — عيّنه كلوحة المفاتيح النشطة لاستخدام هذه الأدوات</string>
-  <string name="setting_browser_per_tool_timeout_desc">الحد الأقصى لزمن انتظار استجابة أداة المتصفح الواحدة بالثواني</string>
+  <string name="setting_browser_per_tool_timeout_desc">ميزانية زمنية صارمة لكل استدعاء لأداة المتصفح. النطاق من 10 ثوانٍ إلى 10 دقائق.</string>
   <string name="setting_browser_per_tool_timeout_unit">ثواني</string>
   <string name="setting_browser_single_task_timeout_desc">حد أقصى صارم لزمن مهمة المتصفح المدعومة بالذكاء الاصطناعي لمنع الحلقات غير المنتهية. النطاق من 1 إلى 60 دقيقة.</string>
   <string name="setting_browser_single_task_timeout_unit">دقائق</string>
@@ -1717,23 +1717,23 @@
   <string name="setting_termux_verify_other_error">خطأ في التحقق: %s</string>
   <string name="setting_termux_section_timeouts">المهلات</string>
   <string name="setting_termux_command_timeout">مهلة الأوامر الإجمالية</string>
-  <string name="setting_termux_command_timeout_desc">الحد الأقصى لمهلة تنفيذ أمر سطر الأوامر بالثواني</string>
+  <string name="setting_termux_command_timeout_desc">المدة الزمنية لانتظار إرجاع مخرجات أمر سطر الأوامر في الخلفية. النطاق من 5 ثوانٍ إلى 600 ثانية.</string>
   <string name="setting_termux_turn_budget">ميزانية وقت الدورة</string>
-  <string name="setting_termux_turn_budget_desc">الحد الأقصى لوقت استدعاء أدوات سطر الأوامر المسموح به في دورة واحدة</string>
+  <string name="setting_termux_turn_budget_desc">حد أقصى صارم لإجمالي الوقت الذي يمكن أن يقضيه دور مستخدم واحد في تنفيذ الأدوات. النطاق من دقيقة واحدة إلى 60 دقيقة.</string>
   <string name="setting_termux_verify_timeout">مهلة التحقق</string>
-  <string name="setting_termux_verify_timeout_desc">مهلة فحص استجابة Termux بالثواني</string>
+  <string name="setting_termux_verify_timeout_desc">مهلة اختبار استجابة أمر الصدى allow-external-apps. النطاق من 3 ثوانٍ إلى 30 ثانية.</string>
   <string name="setting_termux_unit_seconds">ثواني</string>
   <string name="setting_termux_unit_minutes">دقائق</string>
   <string name="setting_termux_unit_steps">خطوات</string>
   <string name="setting_termux_max_tool_steps">الحد الأقصى لاستدعاءات أدوات سطر الأوامر لكل دورة</string>
-  <string name="setting_termux_max_tool_steps_desc">الحد الأقصى لعدد استدعاءات أداة termux_run_command في دورة محادثة واحدة</string>
+  <string name="setting_termux_max_tool_steps_desc">عدد استدعاءات الأدوات التي يمكن لرد واحد تسلسلها قبل إنهائه إجباريًا. ارفع هذه القيمة لمهام التثبيت أو البناء الطويلة. النطاق من 1 إلى 500؛ مع استمرار سريان ميزانية زمن الدور أعلاه.</string>
   <string name="setting_termux_unit_bytes">بايت</string>
   <string name="setting_termux_section_defaults">القيم الافتراضية</string>
   <string name="setting_termux_working_dir">دليل العمل</string>
   <string name="setting_termux_max_stdout">حد مخرجات stdout</string>
-  <string name="setting_termux_max_stdout_desc">الحد الأقصى لأحرف مخرجات القياسية التي تُعاد للمساعد</string>
+  <string name="setting_termux_max_stdout_desc">الحد الأقصى للبايتات من المخرجات القياسية (stdout) المعادة للذكاء الاصطناعي لكل أمر. النطاق من 1,000 إلى 64,000 بايت.</string>
   <string name="setting_termux_max_stderr">حد مخرجات stderr</string>
-  <string name="setting_termux_max_stderr_desc">الحد الأقصى لأحرف مخرجات الأخطاء التي تُعاد للمساعد</string>
+  <string name="setting_termux_max_stderr_desc">الحد الأقصى للبايتات من مخرجات الأخطاء (stderr) المعادة للذكاء الاصطناعي لكل أمر. النطاق من 500 إلى 16,000 بايت.</string>
   <string name="setting_termux_apt_wrap">التغليف التلقائي لـ apt غير التفاعلي</string>
   <string name="setting_termux_apt_wrap_desc">إضافة خيارات التغليف التلقائية لـ DEBIAN_FRONTEND=noninteractive عند تشغيل apt</string>
   <string name="setting_termux_section_help">المساعدة والتوثيق</string>
@@ -1991,7 +1991,7 @@
   <string name="chat_page_delete_folder_confirm">حذف المجلد \"%1$s\"؟ لن يتم حذف المحادثات الموجودة بداخله، بل إزالتها فقط من المجلد.</string>
   <string name="chat_page_delete_folder_generating">لا تزال استجابات بعض المحادثات في هذا المجلد قيد التوليد. يرجى إيقافها قبل الحذف.</string>
   <string name="assistant_page_context_message_limit">حد رسائل السياق</string>
-  <string name="assistant_page_context_message_limit_desc">يحدد الحد الأقصى لعدد الرسائل الأخيرة المرسلة للنموذج. عند تجاوز الحد، يتم تقليص السياق إلى النصف تقريباً في خطوة واحدة بدلاً من حذف رسالة واحدة بكل دور.</string>
+  <string name="assistant_page_context_message_limit_desc">يحدد الحد الأقصى لعدد الرسائل الأخيرة المرسلة للنموذج. عند تجاوز الحد، يتم تقليص السياق إلى النصف تقريبًا في خطوة واحدة بدلاً من حذف رسالة واحدة بكل دور، بحيث تظل بادئة الطلب مستقرة ويستمر عمل الذاكرة المؤقتة للتوجيهات (Prompt Caching) لعدة أدوار.</string>
   <string name="assistant_page_context_message_limit_count">حد رسائل السياق: %d</string>
   <string name="assistant_page_context_message_limit_unlimited">رسائل سياق غير محدودة</string>
   <string name="assistant_page_context_message_limit_warning">تقييد السياق يُبطل الذاكرة المؤقتة للتوجيهات (Prompt Cache) في كل مرة يُقتطع فيها السياق. الحد الأكبر يقلل من مرات الاقتطاع؛ بينما خيار "بلا حد" يمنع الاقتطاع تماماً ويحافظ على الذاكرة المؤقتة سليمة بالكامل.</string>
@@ -2095,4 +2095,17 @@
   <string name="browser_ai_action_done">انتهى: %1$s</string>
   <string name="browser_ai_action_stopped">تم الإيقاف بواسطة المستخدم</string>
   <string name="browser_ai_action_failed">فشل: %1$s</string>
+  <string name="imggen_page_image_missing">ملف الصورة مفقود، ربما لم تتم استعادته من النسخة الاحتياطية</string>
+  <string name="search_picker_local_title">البحث المحلي</string>
+  <string name="search_picker_local_description">الاتصال بمزودي بحث خارجيين متعددين</string>
+  <string name="search_picker_model_title">بحث النموذج</string>
+  <string name="search_picker_model_description">البحث السحابي المدمج في مزود النموذج</string>
+  <string name="search_picker_select_provider">تحديد مزود البحث</string>
+  <string name="search_picker_turn_off">إيقاف البحث</string>
+  <string name="setting_update_reminder_enabled">تذكيرات التحديث مُمكّنة</string>
+  <string name="setting_update_reminder_pause_title">إيقاف تذكيرات التحديث مؤقتًا</string>
+  <string name="setting_update_reminder_pause_description">اختر مدة إيقاف تذكيرات التحديث مؤقتًا. ستُستأنف تلقائيًا.</string>
+  <string name="setting_update_reminder_pause_days">%1$d أيام</string>
+  <string name="setting_update_reminder_paused_until">متوقف مؤقتًا حتى %1$s</string>
+  <string name="setting_update_reminder_resume_now">استئناف الآن</string>
 </resources>
