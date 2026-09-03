@@ -1436,7 +1436,6 @@
   <string name="asr_button_content_description">التعرف على الكلام</string>
   <string name="asr_button_stop">إيقاف</string>
   <string name="assistant_page_temperature_warning">عادةً 1. لا يُنصح بتغييرها لنماذج الاستدلال.</string>
-  <string name="chat_page_check_title_model_settings">تحقق من إعدادات نموذج العنوان</string>
   <string name="permission_microphone">الميكروفون</string>
   <string name="permission_microphone_desc">إذن الميكروفون مطلوب للتعرف على الكلام</string>
   <string name="speech_page_title">الكلام</string>

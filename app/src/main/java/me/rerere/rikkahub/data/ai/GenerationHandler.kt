@@ -1219,7 +1219,7 @@ class GenerationHandler(
             temperature = assistant.temperature,
             topP = assistant.topP,
             maxTokens = assistant.maxTokens,
-            maxStreamRetries = settings.responseStreamMaxRetries,
+            maxStreamRetries = if (settings.networkSetting.enableAutoRetry) settings.responseStreamMaxRetries else 0,
             tools = tools,
             reasoningLevel = assistant.reasoningLevel,
             customHeaders = buildList {
