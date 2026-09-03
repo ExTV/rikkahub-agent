@@ -326,7 +326,9 @@ class SkillManager(
         }
         // #84: names the user explicitly deleted. Read once per pass; deleteSkill() /
         // reinstallBundledSkill() are the only writers, both persisted before this can run.
-        val deletedBundledSkills = settingsStore.settingsFlow.first().deletedBundledSkills
+        // settingsFlow starts as Settings.dummy() (init = true, empty set) until DataStore
+        // loads, and this runs at process start, so wait for the real value.
+        val deletedBundledSkills = settingsStore.settingsFlow.first { !it.init }.deletedBundledSkills
         for (skillName in skillNames) {
             val targetDir = SkillPaths.resolveSkillDir(getSkillsDir(), skillName) ?: continue
             val deletedByUser = skillName in deletedBundledSkills
