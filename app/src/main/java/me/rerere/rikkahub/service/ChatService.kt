@@ -1923,13 +1923,29 @@ class ChatService(
         }
         if (!shouldGenerate) return@withContext
 
+        val fallback = titleFallbackFrom(conversation.currentMessages)
+
+        suspend fun applyTitle(title: String?) {
+            if (title.isNullOrBlank()) return
+            // 生成完，conversation可能不是最新了，因此需要重新获取
+            conversationRepo.getConversationById(conversation.id)?.let {
+                if (shouldWriteTitle(force, it.title)) {
+                    saveConversation(conversationId, it.copy(title = title))
+                }
+            }
+        }
+
         runCatching {
             val settings = settingsStore.settingsFlow.first()
             val model = settings.findModelById(settings.fastModelId)
-                ?: return@runCatching
-            val provider = model.findProvider(settings.providers) ?: return@runCatching
+                ?: run { applyTitle(fallback); return@runCatching }
+            val provider = model.findProvider(settings.providers)
+                ?: run { applyTitle(fallback); return@runCatching }
             // Same defence as handleLlmTurn: don't burn tokens on a disabled provider.
-            if (!provider.enabled) return@runCatching
+            if (!provider.enabled) {
+                applyTitle(fallback)
+                return@runCatching
+            }
 
             val providerHandler = providerManager.getProviderByType(provider)
             val result = providerHandler.generateText(
@@ -1945,13 +1961,7 @@ class ChatService(
                 params = backgroundTextGenerationParams(model, settings.fastModelReasoningLevel),
             )
 
-            // 生成完，conversation可能不是最新了，因此需要重新获取
-            conversationRepo.getConversationById(conversation.id)?.let {
-                saveConversation(
-                    conversationId,
-                    it.copy(title = result.message.toText().trim())
-                )
-            }
+            applyTitle(result.message.toText().trim().ifBlank { fallback })
         }.onFailure {
             // Title generation is auxiliary — a failure here doesn't block the chat
             // and surfaces visibly as a blank conversation title in the list. Don't
@@ -1960,6 +1970,8 @@ class ChatService(
             // and the user gets a popup per message until they switch models. Match
             // the generateSuggestion pattern (log only) to keep the surface quiet.
             Log.w(TAG, "generateTitle failed", it)
+            runCatching { applyTitle(fallback) }
+                .onFailure { e -> Log.w(TAG, "generateTitle fallback apply failed", e) }
         }
     }
 
