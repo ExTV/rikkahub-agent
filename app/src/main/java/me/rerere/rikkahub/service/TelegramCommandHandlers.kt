@@ -616,7 +616,7 @@ internal suspend fun TelegramBotService.handleDoctorCommand(chatId: Long) {
         } catch (_: Throwable) {}
         return
     }
-    val report = me.rerere.rikkahub.ui.pages.setting.doctor.DoctorReport.format(results)
+    val report = me.rerere.rikkahub.ui.pages.setting.doctor.DoctorReport.format(applicationContext, results)
     // Chunk on raw text and send each chunk wrapped in <pre>...</pre> for monospace
     // rendering. Skip sendChunked's markdown→HTML pass (it would mangle the report's
     // existing layout); use the HTML parse mode directly with our own escaping.

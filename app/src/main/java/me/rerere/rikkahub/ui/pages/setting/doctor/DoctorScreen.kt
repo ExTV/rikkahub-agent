@@ -108,7 +108,7 @@ fun DoctorScreen(vm: DoctorViewModel = koinViewModel()) {
                 item("group-${category.name}") {
                     CardGroup(
                         modifier = Modifier.padding(horizontal = 4.dp),
-                        title = { Text(category.displayName) },
+                        title = { Text(stringResource(category.displayNameRes)) },
                     ) {
                         for (check in rows) {
                             item(
@@ -137,7 +137,7 @@ fun DoctorScreen(vm: DoctorViewModel = koinViewModel()) {
                                             }.onFailure {
                                                 scope.launch {
                                                     snackbar.showSnackbar(
-                                                        "Could not open: ${it.message ?: it::class.simpleName}"
+                                                        ctx.getString(R.string.doctor_could_not_open, "${it.message ?: it::class.simpleName}")
                                                     )
                                                 }
                                             }
@@ -176,10 +176,10 @@ private fun SummaryCard(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
-            CountPill("Failures", counts[Severity.FAIL] ?: 0, Severity.FAIL)
-            CountPill("Warnings", counts[Severity.WARN] ?: 0, Severity.WARN)
-            CountPill("OK", counts[Severity.OK] ?: 0, Severity.OK)
-            CountPill("Info", counts[Severity.INFO] ?: 0, Severity.INFO)
+            CountPill(stringResource(R.string.doctor_pill_failures), counts[Severity.FAIL] ?: 0, Severity.FAIL)
+            CountPill(stringResource(R.string.doctor_pill_warnings), counts[Severity.WARN] ?: 0, Severity.WARN)
+            CountPill(stringResource(R.string.doctor_pill_ok), counts[Severity.OK] ?: 0, Severity.OK)
+            CountPill(stringResource(R.string.doctor_pill_info), counts[Severity.INFO] ?: 0, Severity.INFO)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(
@@ -279,5 +279,5 @@ private fun routeFor(key: AppRouteKey): Screen = when (key) {
 
 private fun copyToClipboard(ctx: Context, text: String) {
     val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
-    cm.setPrimaryClip(ClipData.newPlainText("RikkaHub diagnostic report", text))
+    cm.setPrimaryClip(ClipData.newPlainText(ctx.getString(R.string.doctor_clipboard_label), text))
 }
