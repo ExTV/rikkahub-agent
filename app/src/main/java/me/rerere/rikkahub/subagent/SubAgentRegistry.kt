@@ -104,7 +104,7 @@ class SubAgentRegistry {
         if (current.size < SubAgentDefaults.REGISTRY_LRU_CAP) return current
         // Evict the oldest TERMINAL run; never evict a running one. If every run is
         // running, the cap would be exceeded — we accept this since it should be rare
-        // (50 concurrent sub-agents would already have been blocked by the global cap of 16).
+        // (50 concurrent sub-agents would already have been blocked by the global cap of 30).
         val terminalSorted = current.values
             .filter { it.status != SubAgentStatus.RUNNING && it.status != SubAgentStatus.PENDING }
             .sortedBy { it.finishedAtMs ?: it.startedAtMs }

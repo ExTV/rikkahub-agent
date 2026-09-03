@@ -302,6 +302,7 @@ class SubAgentEngine(
             modelId = cleaned.modelId,
             tools = cleaned.tools,
             runInBackground = cleaned.runInBackground,
+            noResult = cleaned.noResult,
             timeoutSeconds = cleaned.timeoutSeconds,
             maxTrips = cleaned.maxTrips,
             status = SubAgentStatus.PENDING,
@@ -521,9 +522,11 @@ class SubAgentEngine(
             run.error?.takeIf { it.isNotBlank() }?.let {
                 appendLine("Error: $it")
             }
-            run.result?.takeIf { it.isNotBlank() }?.let {
-                appendLine()
-                append(it)
+            if (!run.noResult) {
+                run.result?.takeIf { it.isNotBlank() }?.let {
+                    appendLine()
+                    append(it)
+                }
             }
         }.trimEnd()
 

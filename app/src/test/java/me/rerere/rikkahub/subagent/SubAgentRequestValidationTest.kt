@@ -52,6 +52,16 @@ class SubAgentRequestValidationTest {
         assertEquals("invalid_label", (r as SubAgentRequestValidator.Result.Reject).error)
     }
 
+    @Test fun `no_result defaults to false`() {
+        assertEquals(false, SubAgentRequest(task = "x").noResult)
+    }
+
+    @Test fun `no_result true is preserved through validation`() {
+        val r = SubAgentRequestValidator.validate(SubAgentRequest(task = "x", noResult = true))
+        val ok = r as SubAgentRequestValidator.Result.Ok
+        assertTrue(ok.request.noResult)
+    }
+
     @Test fun `boundary values accepted`() {
         val ok = SubAgentRequestValidator.validate(
             SubAgentRequest(

@@ -22,6 +22,7 @@ data class SubAgentRun(
     val modelId: String?,              // null = inherited from parent
     val tools: List<String>?,          // null = inherited from parent
     val runInBackground: Boolean,
+    val noResult: Boolean = false,   // #78/#79: suppress result text from encodeRun/parent notification
     val timeoutSeconds: Int,
     val maxTrips: Int,
     val status: SubAgentStatus,
@@ -50,7 +51,7 @@ object SubAgentDefaults {
     const val DEFAULT_MAX_TRIPS = 12
     const val MAX_MAX_TRIPS = 30
     const val MAX_LABEL_LENGTH = 60
-    const val GLOBAL_CONCURRENCY_CAP = 16
+    const val GLOBAL_CONCURRENCY_CAP = 30
     const val MIN_PER_ASSISTANT_CAP = 1
     const val MAX_PER_ASSISTANT_CAP = 8
     const val REGISTRY_LRU_CAP = 50
@@ -84,6 +85,7 @@ data class SubAgentRequest(
     val systemPrompt: String? = null,
     val tools: List<String>? = null,
     val runInBackground: Boolean = false,
+    val noResult: Boolean = false,
     val timeoutSeconds: Int = SubAgentDefaults.DEFAULT_TIMEOUT_SECONDS,
     val maxTrips: Int = SubAgentDefaults.DEFAULT_MAX_TRIPS,
     val label: String? = null,
