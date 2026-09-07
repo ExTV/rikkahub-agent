@@ -8,8 +8,9 @@ import org.junit.Test
 /**
  * Unit tests for the pure marker-wrapping / terminal-decision logic behind [runCommandCapture]
  * (#83: a Termux start-ACK broadcast, byte-identical to a successful empty run, used to be
- * mistaken for the final result). The Android BroadcastReceiver/PendingIntent plumbing is
- * verified on-device.
+ * mistaken for the final result). Fixtures must use the Termux-delivered shape - StreamGobbler
+ * appends a trailing newline after every line including the marker line (#100). The Android
+ * BroadcastReceiver/PendingIntent plumbing is verified on-device.
  */
 class TermuxToolTest {
 
@@ -35,6 +36,23 @@ class TermuxToolTest {
     }
 
     @Test
+    fun isTerminalResult_termuxDeliveredStdoutWithTrailingNewline_isTerminal() {
+        assertTrue(isTerminalResult(err = -1, exitCode = 0, stdout = "hello\n\nM1\n", marker = "M1"))
+    }
+
+    @Test
+    fun isTerminalResult_noOutputCommandTermuxShape_isTerminal() {
+        // What `true` produces: no stdout, just the marker line.
+        assertTrue(isTerminalResult(err = -1, exitCode = 0, stdout = "\nM1\n", marker = "M1"))
+    }
+
+    @Test
+    fun isTerminalResult_outputWithoutMarkerButTrailingNewline_isNotTerminal() {
+        // A partial/ack bundle must still wait even though stdout ends with a newline.
+        assertFalse(isTerminalResult(err = -1, exitCode = 0, stdout = "hello\n", marker = "M1"))
+    }
+
+    @Test
     fun stripTerminationMarker_removesMarkerAndPrecedingNewline() {
         assertEquals("hello", stripTerminationMarker("hello\nM1", "M1"))
     }
@@ -42,6 +60,26 @@ class TermuxToolTest {
     @Test
     fun stripTerminationMarker_leavesStdoutUntouchedWhenMarkerAbsent() {
         assertEquals("hello", stripTerminationMarker("hello", "M1"))
+    }
+
+    @Test
+    fun stripTerminationMarker_termuxDeliveredShape_restoresCommandStdout() {
+        assertEquals("hello\n", stripTerminationMarker("hello\n\nM1\n", "M1"))
+    }
+
+    @Test
+    fun stripTerminationMarker_noOutputCommandTermuxShape_returnsEmpty() {
+        assertEquals("", stripTerminationMarker("\nM1\n", "M1"))
+    }
+
+    @Test
+    fun stripTerminationMarker_preservesCommandTrailingSpaces() {
+        assertEquals("hi  ", stripTerminationMarker("hi  \nM1\n", "M1"))
+    }
+
+    @Test
+    fun stripTerminationMarker_failedCommandTermuxShape_doesNotLeakMarker() {
+        assertEquals("this_will_fail\n", stripTerminationMarker("this_will_fail\n\nM1\n", "M1"))
     }
 
     @Test

@@ -177,21 +177,28 @@ internal fun buildMarkerWrappedArgv(
  * byte-identical to a successful empty run). An actual internal error ([err] != -1) or a
  * nonzero [exitCode] is always terminal - a denial or a real failure never reaches the marker
  * print. Otherwise (err=-1, exitCode=0, the ack shape) it is terminal only once [stdout] carries
- * our per-call [marker], which only the real completion broadcast can print. Pure.
+ * our per-call [marker], which only the real completion broadcast can print. Termux's
+ * StreamGobbler appends a `"\n"` after every line it reassembles, including the marker line, so
+ * the marker is never the literal last character - trim trailing whitespace before comparing.
+ * Pure.
  */
 internal fun isTerminalResult(err: Int, exitCode: Int, stdout: String, marker: String): Boolean {
     if (err != -1 || exitCode != 0) return true
-    return stdout.endsWith(marker)
+    return stdout.trimEnd().endsWith(marker)
 }
 
 /**
  * Remove the trailing `"\n" + marker` appended by [buildMarkerWrappedArgv]'s script, restoring
  * the command's real stdout. Leaves [stdout] untouched when the marker isn't present (e.g. an
- * error bundle whose script never reached the `printf`). Pure.
+ * error bundle whose script never reached the `printf`). Termux's StreamGobbler appends a
+ * trailing `"\n"` after the marker line that the script itself never printed, so trim it before
+ * matching the suffix - everything before `"\n" + marker` is the command's real stdout, trailing
+ * whitespace included. Pure.
  */
 internal fun stripTerminationMarker(stdout: String, marker: String): String {
+    val trimmed = stdout.trimEnd()
     val suffix = "\n$marker"
-    return if (stdout.endsWith(suffix)) stdout.removeSuffix(suffix) else stdout
+    return if (trimmed.endsWith(suffix)) trimmed.removeSuffix(suffix) else stdout
 }
 
 /**
