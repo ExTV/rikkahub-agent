@@ -58,8 +58,13 @@ class WorkspaceManager(
         root: String,
         path: String = "",
         area: WorkspaceStorageArea = WorkspaceStorageArea.FILES,
+        limit: Int? = null,
     ): List<WorkspaceFileEntry> =
-        fileSystem.list(areaDir(root, area), path)
+        if (limit == null) {
+            fileSystem.list(areaDir(root, area), path)
+        } else {
+            fileSystem.list(areaDir(root, area), path, limit)
+        }
 
     fun readText(
         root: String,

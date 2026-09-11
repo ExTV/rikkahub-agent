@@ -220,7 +220,7 @@ class WorkspaceDetailVM(
                 withContext(Dispatchers.IO) {
                     val listing = mutableMapOf<String, List<WorkspaceFileEntry>>()
                     suspend fun collect(path: String) {
-                        val children = repository.listFiles(id = id, area = area, path = path)
+                        val children = repository.listFiles(id = id, area = area, path = path, limit = Int.MAX_VALUE)
                         listing[path] = children
                         children.filter { it.isDirectory }.forEach { collect(it.path) }
                     }

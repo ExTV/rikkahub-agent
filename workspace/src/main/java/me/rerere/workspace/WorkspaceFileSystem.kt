@@ -12,7 +12,7 @@ import kotlin.io.path.name
 class WorkspaceFileSystem(
     private val config: WorkspaceConfig = WorkspaceConfig(),
 ) {
-    fun list(root: File, path: String = ""): List<WorkspaceFileEntry> {
+    fun list(root: File, path: String = "", limit: Int = config.maxListEntries): List<WorkspaceFileEntry> {
         val dir = resolvePath(root, path)
         require(dir.exists()) { "Path does not exist: $path" }
         require(dir.isDirectory) { "Path is not a directory: $path" }
@@ -20,7 +20,7 @@ class WorkspaceFileSystem(
             .orEmpty()
             .filter { !it.name.startsWith(".l2s.") }
             .sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() })
-            .take(config.maxListEntries)
+            .take(limit)
             .map { it.toEntry(root) }
     }
 

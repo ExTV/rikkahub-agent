@@ -148,10 +148,11 @@ class WorkspaceRepository(
         id: String,
         area: WorkspaceStorageArea,
         path: String,
+        limit: Int? = null,
     ): List<WorkspaceFileEntry> = withContext(Dispatchers.IO) {
         val workspace = dao.getById(id) ?: return@withContext emptyList()
         manager.ensureWorkspace(workspace.root)
-        manager.listFiles(workspace.root, path, area)
+        manager.listFiles(workspace.root, path, area, limit)
     }
 
     suspend fun readText(
