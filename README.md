@@ -51,7 +51,7 @@ Tap, swipe, scroll, type, take screenshots, open apps, adjust brightness/volume,
 
 ### Chat
 
-When a reply ends in an error or comes back with no visible text, a continue chip appears among the suggestions so you can nudge it forward with one tap. Tap any tool call in a message to open its details and re-run it with the same arguments, without spending a new turn. Tap a composer attachment before sending to preview it: images open in a swipeable viewer, other files open through the system chooser.
+When a reply ends in an error or comes back with no visible text, a continue chip appears among the suggestions so you can nudge it forward with one tap. Tap any tool call in a message to open its details and re-run it with the same arguments, without spending a new turn. Tap a composer attachment before sending to preview it: images open in a swipeable viewer, other files open through the system chooser. Voice mode lets you talk to the assistant instead of typing, with speech recognition on the way in and optional spoken replies on the way out. Messages you send while a reply is still generating are queued and delivered in order rather than interrupting it.
 
 ### Shizuku
 
@@ -90,7 +90,7 @@ Find files, read them, save new ones, copy, move, rename, delete. *"Find every P
 
 ### Workspace
 
-A real Linux environment on the phone. The AI runs shell commands, reads, writes, and patches files in it, creates folders, and browses the tree in a built-in file manager with a text editor and image/video preview. Copy files in from anywhere on the device through the system file picker (up to 256 MiB), or export a whole folder back out to a location you pick.
+A real Linux environment on the phone. The AI runs shell commands, reads, writes, and patches files in it, creates folders, and browses the tree in a built-in file manager with a text editor, image thumbnails, video preview, and rendered previews of HTML and SVG files. Copy files in from anywhere on the device through the system file picker (up to 256 MiB), or export a whole folder back out to a location you pick.
 
 Long-running work survives across turns: `workspace_run_background` starts a dev server, install, or file watcher and hands back a task id, `workspace_background_status` polls its recent output, and `workspace_background_kill` stops it. Task ids are scoped to their workspace, and deleting a workspace kills everything it started.
 
