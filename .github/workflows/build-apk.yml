@@ -19,6 +19,11 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      - name: Set up bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
