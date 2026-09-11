@@ -50,7 +50,7 @@ jobs:
             ~/.gradle/wrapper
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
 
-      - name: Configure signing (optional, upstream-compatible secret names)
+      - name: Configure signing (secrets, or generated CI keystore)
         env:
           KEY_BASE64: ${{ secrets.KEY_BASE64 }}
         run: |
@@ -58,17 +58,27 @@ jobs:
             echo "$KEY_BASE64" | base64 -d > app/app.key
             echo "${{ secrets.SIGNING_CONFIG }}" > local.properties
           else
-            echo "No keystore secrets - building UNSIGNED APK"
+            echo "No keystore secrets - generating throwaway CI keystore"
+            keytool -genkeypair -v -keystore /tmp/ci-release.keystore -alias cikey -keyalg RSA -keysize 2048 -validity 10000 -storepass ci_store_pass_9f3k -keypass ci_store_pass_9f3k -dname "CN=CI Build, O=CI"
+            echo "storeFile=/tmp/ci-release.keystore" > local.properties
+            echo "storePassword=ci_store_pass_9f3k" >> local.properties
+            echo "keyAlias=cikey" >> local.properties
+            echo "keyPassword=ci_store_pass_9f3k" >> local.properties
           fi
 
-      - name: Gradle Build
+      - name: Gradle Build (release)
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease
 
-      - name: Upload APK artifact
+      - name: Build debug APK (auto-signed, installs side-by-side)
+        run: ./gradlew assembleDebug
+
+      - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
           name: rikkahub-apks
-          path: app/build/outputs/apk/release/*.apk
+          path: |
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
