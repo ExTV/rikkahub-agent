@@ -3,6 +3,7 @@ package me.rerere.rikkahub.di
 import kotlinx.serialization.json.Json
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.AILoggingManager
+import me.rerere.rikkahub.data.ai.tools.ChatToolFactory
 import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.ai.tools.local.BiometricResultBuffer
 import me.rerere.rikkahub.data.ai.tools.local.CameraResultBuffer
@@ -243,6 +244,18 @@ val appModule = module {
     single { me.rerere.llamacpp.LlamaCppRuntime() }
 
     single {
+        ChatToolFactory(
+            json = get(),
+            memoryRepository = get(),
+            conversationRepository = get(),
+            localTools = get(),
+            mcpManager = get(),
+            skillManager = get(),
+            workspaceRepository = get(),
+        )
+    }
+
+    single {
         ChatService(
             context = get(),
             appScope = get(),
@@ -250,11 +263,12 @@ val appModule = module {
             settingsStore = get(),
             conversationRepo = get(),
             memoryRepository = get(),
-            generationHandler = get(),
+            generationLoop = get(),
             translationHandler = get(),
             templateTransformer = get(),
             providerManager = get(),
             localTools = get(),
+            chatToolFactory = get(),
             mcpManager = get(),
             filesManager = get(),
             skillManager = get(),

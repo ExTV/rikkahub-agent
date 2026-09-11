@@ -147,6 +147,7 @@ import org.koin.compose.koinInject
 import kotlin.uuid.Uuid
 
 private const val TAG = "RouteActivity"
+private const val ACTION_TRANSLATE = "me.rerere.rikkahub.action.TRANSLATE"
 
 class RouteActivity : ComponentActivity() {
     companion object {
@@ -157,6 +158,7 @@ class RouteActivity : ComponentActivity() {
     private val okHttpClient by inject<OkHttpClient>()
     private val settingsStore by inject<SettingsStore>()
     private var navStack: MutableList<NavKey>? = null
+    private val pendingIntents = ArrayDeque<Intent>()
 
     // Volume key listener registry — last registered handler wins
     internal val volumeKeyListeners = mutableListOf<(isVolumeUp: Boolean) -> Boolean>()
@@ -182,6 +184,9 @@ class RouteActivity : ComponentActivity() {
             startActivity(Intent(this, SafeModeActivity::class.java))
             finish()
             return
+        }
+        if (savedInstanceState == null) {
+            handleIntent(intent)
         }
         setContent {
             RikkahubTheme {
@@ -214,54 +219,41 @@ class RouteActivity : ComponentActivity() {
         }
     }
 
-    @Composable
-    private fun ShareHandler(backStack: MutableList<NavKey>) {
-        val shareIntent = remember {
-            Intent().apply {
-                action = intent?.action
-                putExtra(Intent.EXTRA_TEXT, intent?.getStringExtra(Intent.EXTRA_TEXT))
-                putExtra(Intent.EXTRA_STREAM, intent?.getStringExtra(Intent.EXTRA_STREAM))
-                putExtra(Intent.EXTRA_PROCESS_TEXT, intent?.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT))
-            }
-        }
-
-        LaunchedEffect(backStack) {
-            when (shareIntent.action) {
-                Intent.ACTION_SEND -> {
-                    val text = shareIntent.getStringExtra(Intent.EXTRA_TEXT) ?: ""
-                    val imageUri = shareIntent.getStringExtra(Intent.EXTRA_STREAM)
-                    backStack.add(Screen.ShareHandler(text, imageUri))
-                }
-
-                Intent.ACTION_PROCESS_TEXT -> {
-                    val text = shareIntent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString() ?: ""
-                    backStack.add(Screen.ShareHandler(text, null))
-                }
-            }
-        }
-    }
-
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent) {
+        val backStack = navStack ?: run {
+            // Compose hasn't created the nav back stack yet; process once it's ready.
+            pendingIntents.addLast(intent)
+            return
+        }
         if (intent.getBooleanExtra(EXTRA_OPEN_CODEX_SETTINGS, false)) {
             val destination = Screen.SettingProviderDetail(DEFAULT_CODEX_PROVIDER_ID.toString())
-            navStack?.let { stack ->
-                if (stack.lastOrNull() != destination) stack.add(destination)
-            }
+            if (backStack.lastOrNull() != destination) backStack.add(destination)
             intent.removeExtra(EXTRA_OPEN_CODEX_SETTINGS)
         }
         if (intent.getBooleanExtra(EXTRA_OPEN_GEMINI_SETTINGS, false)) {
             val destination = Screen.SettingProviderDetail(DEFAULT_GEMINI_OAUTH_PROVIDER_ID.toString())
-            navStack?.let { stack ->
-                if (stack.lastOrNull() != destination) stack.add(destination)
-            }
+            if (backStack.lastOrNull() != destination) backStack.add(destination)
             intent.removeExtra(EXTRA_OPEN_GEMINI_SETTINGS)
         }
-        // Navigate to the chat screen if a conversation ID is provided
-        intent.getStringExtra("conversationId")?.let { text ->
-            navStack?.add(Screen.Chat(text))
-            intent.removeExtra("conversationId")
+        val destination = when (intent.action) {
+            ACTION_TRANSLATE -> Screen.Translator
+            Intent.ACTION_SEND -> Screen.ShareHandler(
+                text = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty(),
+                streamUri = intent.getStringExtra(Intent.EXTRA_STREAM),
+            )
+            Intent.ACTION_PROCESS_TEXT -> Screen.ShareHandler(
+                text = intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString().orEmpty(),
+            )
+            else -> intent.getStringExtra("conversationId")?.let { Screen.Chat(it) }
+        }
+        if (destination != null && backStack.lastOrNull() != destination) {
+            backStack.add(destination)
         }
     }
 
@@ -285,8 +277,8 @@ class RouteActivity : ComponentActivity() {
         }
         val migrationState by DatabaseMigrationTracker.state.collectAsStateWithLifecycle()
 
-        // Resolve once per composition (not on every recomposition) so a later removeExtra()
-        // of "conversationId" can't flip which rememberNavBackStack() branch below gets called.
+        // Resolve once per composition (not on every recomposition) so a later mutation of the
+        // Intent's extras can't flip which rememberNavBackStack() branch below gets called.
         val deepLinkConversationId = remember { intent?.getStringExtra("conversationId") }
         val initialChatIds = remember {
             resolveInitialChatStack(
@@ -302,29 +294,12 @@ class RouteActivity : ComponentActivity() {
         } else {
             rememberNavBackStack(Screen.Chat(initialChatIds[0]))
         }
-        SideEffect { this@RouteActivity.navStack = backStack }
-
-        LaunchedEffect(backStack) {
-            if (intent.getBooleanExtra(EXTRA_OPEN_CODEX_SETTINGS, false)) {
-                val destination = Screen.SettingProviderDetail(DEFAULT_CODEX_PROVIDER_ID.toString())
-                if (backStack.lastOrNull() != destination) backStack.add(destination)
-                intent.removeExtra(EXTRA_OPEN_CODEX_SETTINGS)
-            }
-            if (intent.getBooleanExtra(EXTRA_OPEN_GEMINI_SETTINGS, false)) {
-                val destination =
-                    Screen.SettingProviderDetail(DEFAULT_GEMINI_OAUTH_PROVIDER_ID.toString())
-                if (backStack.lastOrNull() != destination) backStack.add(destination)
-                intent.removeExtra(EXTRA_OPEN_GEMINI_SETTINGS)
-            }
-            // Deep link was already consumed into the initial back stack above; clear it so a
-            // future recreation with the same Intent doesn't re-push it (mirrors how
-            // EXTRA_OPEN_CODEX_SETTINGS is cleared above).
-            if (deepLinkConversationId != null) {
-                intent.removeExtra("conversationId")
+        SideEffect {
+            navStack = backStack
+            while (pendingIntents.isNotEmpty()) {
+                handleIntent(pendingIntents.removeFirst())
             }
         }
-
-        ShareHandler(backStack)
 
         SharedTransitionLayout {
             CompositionLocalProvider(

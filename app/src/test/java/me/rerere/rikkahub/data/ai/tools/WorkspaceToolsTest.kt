@@ -19,12 +19,14 @@ class WorkspaceToolsTest {
         assertFalse("/workspace/notes.txt".isOutsideWritableRoots())
         assertFalse("/tmp/scratch".isOutsideWritableRoots())
         assertFalse("/workspace".isOutsideWritableRoots())
+        // /skills is a writable safe zone as of upstream 019c46aee.
+        assertFalse("/skills/foo".isOutsideWritableRoots())
     }
 
     @Test
     fun `path outside every writable root is outside`() {
         assertTrue("/etc/passwd".isOutsideWritableRoots())
-        assertTrue("/skills/foo".isOutsideWritableRoots())
+        assertTrue("/var/log/x".isOutsideWritableRoots())
     }
 
     @Test

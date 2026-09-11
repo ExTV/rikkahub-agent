@@ -71,6 +71,7 @@ sealed class ProviderSetting {
         var includeHistoryReasoning: Boolean = true,
         // OpenRouter only: provider-routing preferences emitted as the `provider` object.
         var routing: OpenRouterRouting = OpenRouterRouting(),
+        var responsesPath: String = "/responses",
     ) : ProviderSetting() {
         override fun addModel(model: Model): ProviderSetting {
             return copy(models = models + model)

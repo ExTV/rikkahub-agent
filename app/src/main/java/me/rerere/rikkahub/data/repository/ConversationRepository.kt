@@ -46,6 +46,9 @@ class ConversationRepository(
         private const val INITIAL_LOAD_SIZE = 40
     }
 
+    suspend fun hasFileReference(fileUrl: String): Boolean =
+        messageNodeDAO.hasFileReference(JsonInstant.encodeToString(fileUrl))
+
     suspend fun getRecentConversations(assistantId: Uuid, limit: Int = 10): List<Conversation> {
         return conversationDAO.getRecentConversationsOfAssistant(
             assistantId = assistantId.toString(),

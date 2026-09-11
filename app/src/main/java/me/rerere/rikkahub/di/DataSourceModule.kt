@@ -13,7 +13,7 @@ import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.AIRequestInterceptor
 import me.rerere.rikkahub.data.ai.RequestLoggingInterceptor
 import me.rerere.rikkahub.data.ai.transformers.AssistantTemplateLoader
-import me.rerere.rikkahub.data.ai.GenerationHandler
+import me.rerere.rikkahub.data.ai.GenerationLoop
 import me.rerere.rikkahub.data.ai.TranslationHandler
 import me.rerere.rikkahub.data.ai.transformers.TemplateTransformer
 import me.rerere.rikkahub.data.api.HuggingFaceAPI
@@ -130,7 +130,7 @@ val dataSourceModule = module {
     single { McpManager(settingsStore = get(), appScope = get(), filesManager = get()) }
 
     single {
-        GenerationHandler(
+        GenerationLoop(
             context = get(),
             providerManager = get(),
             json = get(),

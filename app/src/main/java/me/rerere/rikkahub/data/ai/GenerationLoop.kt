@@ -27,7 +27,6 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.Model
@@ -393,7 +392,7 @@ internal data class LoopGuardDecision(
 )
 
 /**
- * Pure, testable loop-detection decision, extracted from [GenerationHandler.generateText] so
+ * Pure, testable loop-detection decision, extracted from [GenerationLoop.generateText] so
  * the act-observe reset and freshness-TTL rules can be unit-tested without an Android Context.
  */
 internal object LoopGuard {
@@ -430,7 +429,7 @@ internal object LoopGuard {
     }
 }
 
-class GenerationHandler(
+class GenerationLoop(
     private val context: Context,
     private val providerManager: ProviderManager,
     private val json: Json,
@@ -663,8 +662,8 @@ class GenerationHandler(
                 )
                 emit(GenerationChunk.Messages(messages))
 
-                val tools = messages.last().getTools().filter { !it.isExecuted }
-                if (tools.isEmpty()) {
+                val toolCalls = messages.last().getTools().filter { !it.isExecuted }
+                if (toolCalls.isEmpty()) {
                     // no tool calls, break
                     break
                 }
@@ -676,8 +675,8 @@ class GenerationHandler(
                 // flips to Pending and a duplicate prompt is emitted even though X is
                 // now persisted-approved.
                 var hasPendingApproval = false
-                val updatedTools = ArrayList<UIMessagePart.Tool>(tools.size)
-                for (tool in tools) {
+                val updatedTools = ArrayList<UIMessagePart.Tool>(toolCalls.size)
+                for (tool in toolCalls) {
                     val toolDef = toolsInternal.find { it.name == tool.toolName }
                     // HARDLINE check: certain command patterns (rm -rf /, mkfs, shutdown,
                     // fork bomb, …) are blocked unconditionally — even "Always Allow"
@@ -724,7 +723,7 @@ class GenerationHandler(
                 }
 
                 // If any tools were updated to Pending, update the message and break
-                if (updatedTools != tools) {
+                if (updatedTools != toolCalls) {
                     val lastMessage = messages.last()
                     val updatedParts = lastMessage.parts.map { part ->
                         if (part is UIMessagePart.Tool) {

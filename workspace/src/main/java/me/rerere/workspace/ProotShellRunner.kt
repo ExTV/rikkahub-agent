@@ -76,6 +76,11 @@ class ProotShellRunner(
             .directory(context.filesDir)
             .redirectErrorStream(false)
             .apply {
+                if (context.shellCompatibilityMode) {
+                    environment()["PROOT_NO_SECCOMP"] = "1"
+                } else {
+                    environment().remove("PROOT_NO_SECCOMP")
+                }
                 environment()["PROOT_LOADER"] = loader.absolutePath
                 environment()["PROOT_TMP_DIR"] = context.tempDir.absolutePath
                 environment()["TMPDIR"] = context.tempDir.absolutePath
