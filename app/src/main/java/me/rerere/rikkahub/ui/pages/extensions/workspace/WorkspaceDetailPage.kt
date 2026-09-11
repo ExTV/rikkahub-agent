@@ -101,6 +101,7 @@ fun WorkspaceDetailPage(id: String) {
     val installProgress by vm.installProgress.collectAsStateWithLifecycle()
     val installError by vm.installError.collectAsStateWithLifecycle()
     val folderExportResult by vm.folderExportResult.collectAsStateWithLifecycle()
+    val folderExportProgress by vm.folderExportProgress.collectAsStateWithLifecycle()
     val pagerState = rememberPagerState { 2 }
     val scope = rememberCoroutineScope()
     var deleteTarget by remember { mutableStateOf<WorkspaceFileEntry?>(null) }
@@ -142,6 +143,10 @@ fun WorkspaceDetailPage(id: String) {
     BackHandler(enabled = pagerState.currentPage == 1 && state.path.isNotBlank()) {
         vm.goUp()
     }
+
+    // 大文件夹导出期间禁用返回键, 避免用户中途离开触发取消 (见 exportFolder 的取消安全处理);
+    // 必须晚于上面的 BackHandler 声明, 以便导出进行时优先拦截返回事件
+    BackHandler(enabled = folderExportProgress != null) {}
 
     LaunchedEffect(folderExportResult) {
         val result = folderExportResult ?: return@LaunchedEffect
@@ -312,6 +317,31 @@ fun WorkspaceDetailPage(id: String) {
                     Text(stringResource(R.string.common_confirm))
                 }
             },
+        )
+    }
+
+    folderExportProgress?.let { progress ->
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text(stringResource(R.string.workspace_detail_folder_export_progress_title, progress.folderName)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    LinearProgressIndicator(
+                        progress = { (progress.done.toFloat() / progress.total).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        text = stringResource(R.string.workspace_detail_folder_export_progress_count, progress.done, progress.total),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        text = stringResource(R.string.workspace_detail_folder_export_progress_warning),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {},
         )
     }
 

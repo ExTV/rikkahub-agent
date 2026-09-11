@@ -1826,6 +1826,9 @@
   <string name="workspace_detail_empty_directory">الدليل فارغ</string>
   <string name="workspace_detail_folder_export_success">تم تصدير %1$s</string>
   <string name="workspace_detail_folder_export_partial">تم تصدير %1$s مع %2$d حالة فشل</string>
+  <string name="workspace_detail_folder_export_progress_title">جارٍ تصدير %1$s</string>
+  <string name="workspace_detail_folder_export_progress_count">%1$d / %2$d ملف</string>
+  <string name="workspace_detail_folder_export_progress_warning">أبقِ هذه الشاشة مفتوحة حتى ينتهي التصدير.</string>
   <string name="workspace_detail_shell_disabled">معطّل</string>
   <string name="workspace_detail_shell_installing">جارٍ تثبيت Rootfs...</string>
   <string name="workspace_detail_shell_ready">جاهز ومفعّل</string>

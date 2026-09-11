@@ -44,6 +44,9 @@ class WorkspaceDetailVM(
     private val _folderExportResult = MutableStateFlow<WorkspaceFolderExportResult?>(null)
     val folderExportResult = _folderExportResult.asStateFlow()
 
+    private val _folderExportProgress = MutableStateFlow<WorkspaceFolderExportProgress?>(null)
+    val folderExportProgress = _folderExportProgress.asStateFlow()
+
     init {
         loadWorkspace()
         refresh()
@@ -226,47 +229,71 @@ class WorkspaceDetailVM(
                     }
                     collect(entry.path)
                     val plan = planWorkspaceFolderExport(entry.path, listing)
+                    val showProgress = plan.size > FOLDER_EXPORT_PROGRESS_THRESHOLD
 
-                    val dirDocs = mutableMapOf<String, DocumentFile>()
-                    dirDocs[entry.path] = destinationTree.createDirectory(entry.name)
-                        ?: error("Failed to create destination folder: ${entry.name}")
+                    try {
+                        val dirDocs = mutableMapOf<String, DocumentFile>()
+                        dirDocs[entry.path] = destinationTree.createDirectory(entry.name)
+                            ?: error("Failed to create destination folder: ${entry.name}")
 
-                    var failures = 0
-                    for (item in plan) {
-                        val parentDoc = dirDocs[item.parentPath]
-                        if (parentDoc == null) {
-                            failures++
-                            Log.w(TAG, "Folder export: parent not created, skipping ${item.sourcePath}")
-                            continue
+                        if (showProgress) {
+                            _folderExportProgress.value = WorkspaceFolderExportProgress(
+                                folderName = entry.name,
+                                done = 0,
+                                total = plan.size,
+                            )
                         }
-                        if (item.isDirectory) {
-                            val dirDoc = parentDoc.createDirectory(item.name)
-                            if (dirDoc == null) {
+
+                        var failures = 0
+                        for ((done, item) in plan.withIndex()) {
+                            val parentDoc = dirDocs[item.parentPath]
+                            if (parentDoc == null) {
                                 failures++
-                                Log.w(TAG, "Folder export: failed to create directory ${item.sourcePath}")
+                                Log.w(TAG, "Folder export: parent not created, skipping ${item.sourcePath}")
+                            } else if (item.isDirectory) {
+                                val dirDoc = parentDoc.createDirectory(item.name)
+                                if (dirDoc == null) {
+                                    failures++
+                                    Log.w(TAG, "Folder export: failed to create directory ${item.sourcePath}")
+                                } else {
+                                    dirDocs[item.sourcePath] = dirDoc
+                                }
                             } else {
-                                dirDocs[item.sourcePath] = dirDoc
-                            }
-                        } else {
-                            val result = runCatching {
                                 val fileDoc = parentDoc.createFile("application/octet-stream", item.name)
-                                    ?: error("Failed to create file: ${item.name}")
-                                val output = openOutputStream(fileDoc.uri) ?: error("Failed to open output stream")
-                                output.use { out ->
-                                    repository.exportFile(id = id, area = area, path = item.sourcePath, outputStream = out)
+                                if (fileDoc == null) {
+                                    failures++
+                                    Log.w(TAG, "Folder export: failed to create file ${item.sourcePath}")
+                                } else {
+                                    runCatching {
+                                        val output = openOutputStream(fileDoc.uri) ?: error("Failed to open output stream")
+                                        output.use { out ->
+                                            repository.exportFile(id = id, area = area, path = item.sourcePath, outputStream = out)
+                                        }
+                                    }.onFailure { error ->
+                                        fileDoc.delete()
+                                        if (error is CancellationException) throw error
+                                        failures++
+                                        Log.w(TAG, "Folder export: failed to export ${item.sourcePath}", error)
+                                    }
                                 }
                             }
-                            result.onFailure { error ->
-                                failures++
-                                Log.w(TAG, "Folder export: failed to export ${item.sourcePath}", error)
+                            if (showProgress) {
+                                _folderExportProgress.value = WorkspaceFolderExportProgress(
+                                    folderName = entry.name,
+                                    done = done + 1,
+                                    total = plan.size,
+                                )
                             }
                         }
+                        failures
+                    } finally {
+                        _folderExportProgress.value = null
                     }
-                    failures
                 }
             }.onSuccess { failures ->
                 _folderExportResult.value = WorkspaceFolderExportResult(folderName = entry.name, failures = failures)
             }.onFailure { error ->
+                if (error is CancellationException) throw error
                 _state.update { it.copy(error = error.message ?: "导出文件夹失败") }
             }
         }
@@ -364,6 +391,7 @@ class WorkspaceDetailVM(
 
     companion object {
         private const val TAG = "WorkspaceDetailVM"
+        private const val FOLDER_EXPORT_PROGRESS_THRESHOLD = 50
     }
 }
 
@@ -395,6 +423,12 @@ sealed interface WorkspaceTerminalEntry {
 data class WorkspaceFolderExportResult(
     val folderName: String,
     val failures: Int,
+)
+
+data class WorkspaceFolderExportProgress(
+    val folderName: String,
+    val done: Int,
+    val total: Int,
 )
 
 /** 树形视图里的一行: 条目本身 + 相对于当前根列表的缩进深度 (根条目为 0) */

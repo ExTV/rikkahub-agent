@@ -1648,6 +1648,9 @@
   <string name="workspace_detail_empty_directory">Пустая директория</string>
   <string name="workspace_detail_folder_export_success">Экспортировано: %1$s</string>
   <string name="workspace_detail_folder_export_partial">Экспортировано: %1$s, ошибок: %2$d</string>
+  <string name="workspace_detail_folder_export_progress_title">Экспорт: %1$s</string>
+  <string name="workspace_detail_folder_export_progress_count">%1$d / %2$d файлов</string>
+  <string name="workspace_detail_folder_export_progress_warning">Не закрывайте этот экран до завершения экспорта.</string>
   <string name="accessibility_expand_folder">Развернуть папку</string>
   <string name="accessibility_collapse_folder">Свернуть папку</string>
   <string name="workspace_detail_shell_disabled">Отключено</string>

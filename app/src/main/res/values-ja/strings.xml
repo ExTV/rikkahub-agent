@@ -1648,6 +1648,9 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="workspace_detail_empty_directory">空のディレクトリ</string>
   <string name="workspace_detail_folder_export_success">%1$s をエクスポートしました</string>
   <string name="workspace_detail_folder_export_partial">%1$s をエクスポートしました（%2$d 件失敗）</string>
+  <string name="workspace_detail_folder_export_progress_title">%1$s をエクスポート中</string>
+  <string name="workspace_detail_folder_export_progress_count">%1$d / %2$d ファイル</string>
+  <string name="workspace_detail_folder_export_progress_warning">エクスポートが完了するまでこの画面を開いたままにしてください。</string>
   <string name="accessibility_expand_folder">フォルダを展開</string>
   <string name="accessibility_collapse_folder">フォルダを折りたたむ</string>
   <string name="workspace_detail_shell_disabled">無効</string>

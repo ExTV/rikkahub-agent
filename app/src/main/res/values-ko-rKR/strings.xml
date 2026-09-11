@@ -1648,6 +1648,9 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네�
   <string name="workspace_detail_empty_directory">빈 디렉토리</string>
   <string name="workspace_detail_folder_export_success">%1$s 내보내기 완료</string>
   <string name="workspace_detail_folder_export_partial">%1$s 내보내기 완료 (%2$d개 실패)</string>
+  <string name="workspace_detail_folder_export_progress_title">%1$s 내보내는 중</string>
+  <string name="workspace_detail_folder_export_progress_count">%1$d / %2$d개 파일</string>
+  <string name="workspace_detail_folder_export_progress_warning">내보내기가 끝날 때까지 이 화면을 열어두세요.</string>
   <string name="accessibility_expand_folder">폴더 펼치기</string>
   <string name="accessibility_collapse_folder">폴더 접기</string>
   <string name="workspace_detail_shell_disabled">비활성화됨</string>

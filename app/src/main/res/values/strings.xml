@@ -1830,6 +1830,9 @@
   <string name="workspace_detail_empty_directory">Empty directory</string>
   <string name="workspace_detail_folder_export_success">Exported %1$s</string>
   <string name="workspace_detail_folder_export_partial">Exported %1$s with %2$d failure(s)</string>
+  <string name="workspace_detail_folder_export_progress_title">Exporting %1$s</string>
+  <string name="workspace_detail_folder_export_progress_count">%1$d / %2$d files</string>
+  <string name="workspace_detail_folder_export_progress_warning">Keep this screen open until the export finishes.</string>
   <string name="workspace_detail_shell_disabled">Disabled</string>
   <string name="workspace_detail_shell_installing">Installing</string>
   <string name="workspace_detail_shell_ready">Ready</string>
