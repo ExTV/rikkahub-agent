@@ -429,6 +429,23 @@ internal object LoopGuard {
     }
 }
 
+/**
+ * On resume after a tool-approval decision, picks every tool from the same model step that
+ * should execute now: the ones the user acted on ([UIMessagePart.Tool.canResumeExecution] -
+ * Approved/Denied/Answered) plus any sibling that was classified `Auto` but never got to run
+ * because the step broke early on a *different*, Pending sibling (#107 - otherwise those Auto
+ * tools are orphaned forever and the model never learns their results). Order matches [tools],
+ * i.e. the original call order. A tool still Pending is never included. This does not change
+ * [canResumeToolExecution] itself - Auto stays false there ([ToolApprovalStateTest] and the
+ * top-of-loop Pending-detection both rely on that); the inclusion happens only at this resume
+ * call site.
+ */
+internal fun resumableToolsIncludingUnexecutedAuto(
+    tools: List<UIMessagePart.Tool>,
+): List<UIMessagePart.Tool> = tools.filter { tool ->
+    tool.canResumeExecution || (tool.approvalState is ToolApprovalState.Auto && !tool.isExecuted)
+}
+
 class GenerationLoop(
     private val context: Context,
     private val providerManager: ProviderManager,
@@ -744,9 +761,11 @@ class GenerationLoop(
 
                 toolsToProcess = updatedTools
             } else {
-                // Resuming after user interaction - use the resumable tools directly.
-                Log.i(TAG, "generateText: resuming with ${pendingTools.size} resumable tools")
-                toolsToProcess = messages.last().getTools().filter { it.canResumeExecution }
+                // Resuming after user interaction - use the resumable tools, plus any Auto
+                // sibling from the same step that never executed because the step broke early
+                // on a Pending tool (#107).
+                toolsToProcess = resumableToolsIncludingUnexecutedAuto(messages.last().getTools())
+                Log.i(TAG, "generateText: resuming with ${toolsToProcess.size} resumable tools")
             }
 
             // Handle tools (execute approved tools, handle denied tools)
