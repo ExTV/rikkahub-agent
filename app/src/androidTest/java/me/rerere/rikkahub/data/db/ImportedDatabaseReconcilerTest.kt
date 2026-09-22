@@ -5,6 +5,7 @@ import android.database.sqlite.SQLiteDatabase
 import androidx.room.Room
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import me.rerere.rikkahub.data.db.migrations.Migration_30_31
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -64,6 +65,7 @@ class ImportedDatabaseReconcilerTest {
 
         val room = Room.databaseBuilder(context, AppDatabase::class.java, TEST_DB)
             .allowMainThreadQueries()
+            .addMigrations(Migration_30_31)
             .build()
         try {
             // Forcing the db open replays the 24 -> 25 auto-migration; this is where the
@@ -109,6 +111,105 @@ class ImportedDatabaseReconcilerTest {
             }
         } finally {
             room.close()
+        }
+    }
+
+    @Test
+    fun afterReconcile_upstreamBackupMissingShellCompatibilityColumn_endsStampedWithColumn() {
+        createUpstream25xBackup(conversationId = "c2", withShellCompatibilityColumn = false)
+
+        ImportedDatabaseReconciler.reconcileDatabaseFile(context.getDatabasePath(TEST_DB))
+
+        SQLiteDatabase.openDatabase(
+            context.getDatabasePath(TEST_DB).absolutePath,
+            null,
+            SQLiteDatabase.OPEN_READONLY,
+        ).use { raw ->
+            assertEquals(
+                "reconcile should stamp the file to EXPECTED_VERSION",
+                ImportedDatabaseReconciler.EXPECTED_VERSION,
+                raw.version,
+            )
+            raw.rawQuery("PRAGMA table_info(`workspaces`)", null).use { cursor ->
+                val nameIndex = cursor.getColumnIndex("name")
+                val names = generateSequence { if (cursor.moveToNext()) cursor.getString(nameIndex) else null }.toList()
+                assertEquals(
+                    "shell_compatibility_mode should be backfilled exactly once",
+                    1,
+                    names.count { it == "shell_compatibility_mode" },
+                )
+            }
+        }
+    }
+
+    @Test
+    fun afterReconcile_upstreamBackupAlreadyHasShellCompatibilityColumn_isLeftIntact() {
+        createUpstream25xBackup(conversationId = "c3", withShellCompatibilityColumn = true)
+
+        ImportedDatabaseReconciler.reconcileDatabaseFile(context.getDatabasePath(TEST_DB))
+
+        SQLiteDatabase.openDatabase(
+            context.getDatabasePath(TEST_DB).absolutePath,
+            null,
+            SQLiteDatabase.OPEN_READONLY,
+        ).use { raw ->
+            assertEquals(ImportedDatabaseReconciler.EXPECTED_VERSION, raw.version)
+            raw.rawQuery("PRAGMA table_info(`workspaces`)", null).use { cursor ->
+                val nameIndex = cursor.getColumnIndex("name")
+                val names = generateSequence { if (cursor.moveToNext()) cursor.getString(nameIndex) else null }.toList()
+                assertEquals(
+                    "a pre-existing shell_compatibility_mode column must not be duplicated",
+                    1,
+                    names.count { it == "shell_compatibility_mode" },
+                )
+            }
+        }
+    }
+
+    /**
+     * Writes a file that looks like an upstream RikkaHub 2.5.x backup: start from a genuine fork
+     * v31 database (Room creates every table and stamps the v31 identity), seed a conversation,
+     * then downgrade the file on disk by dropping the fork-only tables, stamping a foreign
+     * (upstream) version + identity, and optionally stripping `workspaces.shell_compatibility_mode`
+     * to reproduce a restore that predates the reconciler's issue #105 fix.
+     */
+    private fun createUpstream25xBackup(conversationId: String, withShellCompatibilityColumn: Boolean) {
+        val room = Room.databaseBuilder(context, AppDatabase::class.java, TEST_DB)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            room.openHelper.writableDatabase.execSQL(
+                "INSERT INTO ConversationEntity (id, title, nodes, create_at, update_at) " +
+                    "VALUES (?, ?, ?, ?, ?)",
+                arrayOf<Any?>(conversationId, "hello", "[]", 1_000L, 1_000L),
+            )
+        } finally {
+            room.close() // checkpoints WAL so the raw handle below sees a settled file
+        }
+
+        val dbFile = context.getDatabasePath(TEST_DB)
+        SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READWRITE).use { raw ->
+            FORK_ONLY_TABLES.forEach { raw.execSQL("DROP TABLE IF EXISTS `$it`") }
+            if (!withShellCompatibilityColumn) {
+                // SQLite has no portable DROP COLUMN across the SQLite versions bundled with
+                // every supported Android version, so rebuild the table without it instead.
+                raw.execSQL("ALTER TABLE `workspaces` RENAME TO `workspaces_old`")
+                raw.execSQL(
+                    "CREATE TABLE `workspaces` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `root` TEXT NOT NULL, " +
+                        "`shell_status` TEXT NOT NULL, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, " +
+                        "`last_access_at` INTEGER, `tool_approvals` TEXT NOT NULL DEFAULT '{}', PRIMARY KEY(`id`))"
+                )
+                raw.execSQL(
+                    "INSERT INTO `workspaces` (id, name, root, shell_status, created_at, updated_at, last_access_at, tool_approvals) " +
+                        "SELECT id, name, root, shell_status, created_at, updated_at, last_access_at, tool_approvals FROM `workspaces_old`"
+                )
+                raw.execSQL("DROP TABLE `workspaces_old`")
+            }
+            raw.execSQL(
+                "UPDATE room_master_table SET identity_hash = ? WHERE id = 42",
+                arrayOf<Any?>(UPSTREAM_IDENTITY),
+            )
+            raw.version = UPSTREAM_VERSION // an upstream-style stamp, below EXPECTED_VERSION
         }
     }
 

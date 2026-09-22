@@ -23,7 +23,7 @@ import java.io.File
  * This step runs once, right after the restore writes `rikka_hub.db`, on the raw file before
  * Room touches it:
  *  - It creates any of the fork-only tables that are missing, empty, with the exact schema
- *    Room expects (copied verbatim from app/schemas/.../30.json), so the file looks like a
+ *    Room expects (copied verbatim from app/schemas/.../31.json), so the file looks like a
  *    clean agent install for those tables.
  *  - It backfills the indices and columns that Room would normally add via the auto-migrations
  *    between the restored version and [EXPECTED_VERSION] (see [BACKFILL_INDEX_DDL] and the
@@ -54,15 +54,15 @@ object ImportedDatabaseReconciler {
 
     /**
      * Room's schema version and identity hash for [AppDatabase]. Both are copied verbatim
-     * from app/schemas/me.rerere.rikkahub.data.db.AppDatabase/30.json (the identity hash also
+     * from app/schemas/me.rerere.rikkahub.data.db.AppDatabase/31.json (the identity hash also
      * appears in the generated AppDatabase_Impl RoomOpenDelegate). When the schema version is
      * bumped, update BOTH constants (and the table DDL below if the fork-only tables changed,
      * BACKFILL_INDEX_DDL if any entity gained/lost an index, and MODERN_COLUMN_SENTINELS if
      * newer *shared* conversation columns were added) or this reconciliation will silently stop
      * matching. `internal` so a JVM test can assert these stay in sync with the schema export.
      */
-    internal const val EXPECTED_VERSION = 30
-    internal const val EXPECTED_IDENTITY_HASH = "4969a8576be916e3bd22e4a9a48a272d"
+    internal const val EXPECTED_VERSION = 31
+    internal const val EXPECTED_IDENTITY_HASH = "61a9c9769b0c9f68743007339a58e420"
 
     /**
      * Columns that a restored file must already have for its shared schema to be considered
@@ -76,6 +76,15 @@ object ImportedDatabaseReconciler {
 
     private const val CONTEXT_COMPACTION_DDL =
         "CREATE TABLE IF NOT EXISTS `conversation_compaction` (`conversation_id` TEXT NOT NULL, `summary` TEXT NOT NULL, `tail_start_node_id` TEXT, `source_end_node_id` TEXT NOT NULL, `summary_model_id` TEXT NOT NULL, `is_auto` INTEGER NOT NULL, `source_token_estimate` INTEGER NOT NULL, `created_at` INTEGER NOT NULL, PRIMARY KEY(`conversation_id`), FOREIGN KEY(`conversation_id`) REFERENCES `ConversationEntity`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )"
+
+    /**
+     * v31 adds this column to `workspaces` via [me.rerere.rikkahub.data.db.migrations.Migration_30_31].
+     * That migration never runs on the "already current" path below, so it has to be backfilled
+     * here too (issue #105), same reasoning as `chat_model_id` further down. DDL byte-identical
+     * to the migration's.
+     */
+    private const val SHELL_COMPATIBILITY_MODE_DDL =
+        "ALTER TABLE `workspaces` ADD COLUMN `shell_compatibility_mode` INTEGER NOT NULL DEFAULT 0"
 
     /**
      * Fork-only tables absent from an upstream backup, with their exact v25 create + index
@@ -173,6 +182,14 @@ object ImportedDatabaseReconciler {
                                 "ALTER TABLE `ConversationEntity` ADD COLUMN `chat_model_id` TEXT NOT NULL DEFAULT ''"
                             )
                         }
+                        // A restored file without a `workspaces` table (pre-2.3 upstream) has
+                        // nothing to add this column to; running the ALTER would fail and roll
+                        // back the whole transaction, so only attempt it when the table exists.
+                        if (tableExists(db, "workspaces") &&
+                            !hasColumn(db, "workspaces", "shell_compatibility_mode")
+                        ) {
+                            db.execSQL(SHELL_COMPATIBILITY_MODE_DDL)
+                        }
                         // No migration should run: the file is either already stamped at the
                         // fork's version, or it is an upstream file whose shared schema already
                         // matches it. Point Room's identity row and user_version at the fork so
@@ -219,6 +236,19 @@ object ImportedDatabaseReconciler {
             }
         } catch (t: Throwable) {
             Log.w(TAG, "hasColumn: failed to inspect $table.$column", t)
+            false
+        }
+    }
+
+    /** True if [table] exists. Best-effort; false on error. */
+    private fun tableExists(db: SQLiteDatabase, table: String): Boolean {
+        return try {
+            db.rawQuery(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                arrayOf(table),
+            ).use { cursor -> cursor.moveToFirst() }
+        } catch (t: Throwable) {
+            Log.w(TAG, "tableExists: failed to check $table", t)
             false
         }
     }
