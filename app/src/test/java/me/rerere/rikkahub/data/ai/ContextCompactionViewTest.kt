@@ -5,6 +5,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.ConversationCompaction
 import me.rerere.rikkahub.data.model.MessageNode
+import me.rerere.rikkahub.data.model.toMessageNode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
@@ -421,5 +422,115 @@ class ContextCompactionViewTest {
         // source-end node absent from after
         val sourceEndGone = listOf(nodes[0], nodes[2], nodes[3])
         assertFalse(ContextCompactionView.compactedPrefixUnchanged(compaction, nodes, sourceEndGone))
+    }
+
+    @Test
+    fun `mergeGeneratedMessages matches the old nested-scan algorithm on a large history`() {
+        val nodeCount = 3000
+        val tailSize = 300
+        val nodes = (0 until nodeCount).map { i ->
+            MessageNode(messages = listOf(UIMessage.user("node-$i")))
+        }
+        val conversation = Conversation(
+            assistantId = Uuid.random(),
+            messageNodes = nodes,
+        )
+        val tailStartIndex = nodeCount - tailSize
+        val compaction = ConversationCompaction(
+            conversationId = conversation.id,
+            summary = "summary of large history",
+            tailStartNodeId = nodes[tailStartIndex].id,
+            sourceEndNodeId = nodes[tailStartIndex - 1].id,
+            summaryModelId = Uuid.random(),
+            isAuto = true,
+            sourceTokenEstimate = 100_000,
+            createdAt = Instant.now(),
+        )
+        val view = ContextCompactionView.build(conversation, compaction)
+        assertEquals(tailSize + 1, view.messages.size)
+
+        // Update case: a few tail messages come back with different content but the same id.
+        val updateGenerated = view.messages.mapIndexed { index, message ->
+            if (index == 1 || index == tailSize / 2 || index == tailSize) {
+                message.copy(parts = listOf(UIMessagePart.Text(message.toText() + " updated")))
+            } else {
+                message
+            }
+        }
+        assertMergeMatchesOldAlgorithm(conversation, view, updateGenerated)
+
+        // Append case: the unchanged tail plus a brand new assistant reply.
+        val appendGenerated = view.messages + UIMessage.assistant("brand new reply")
+        assertMergeMatchesOldAlgorithm(conversation, view, appendGenerated)
+
+        // Regenerate-boundary case: regenerate a node in the middle of the tail.
+        val regenerateEndExclusive = tailStartIndex + tailSize / 2
+        val regenerateView = ContextCompactionView.buildForRange(conversation, compaction, regenerateEndExclusive)!!
+        val regenerateGenerated = regenerateView.messages + UIMessage.assistant("regenerated reply")
+        assertMergeMatchesOldAlgorithm(conversation, regenerateView, regenerateGenerated)
+    }
+
+    private fun assertMergeMatchesOldAlgorithm(
+        conversation: Conversation,
+        view: CompactedMessageView,
+        generatedMessages: List<UIMessage>,
+    ) {
+        val expected = oldMergeGeneratedMessages(conversation, view, generatedMessages)
+        val actual = ContextCompactionView.mergeGeneratedMessages(conversation, view, generatedMessages)
+        // Compare messages + selectIndex per node, not MessageNode.id: a freshly appended node's
+        // id is Uuid.random() (see toMessageNode()), so two independently computed appends -
+        // even from the exact same algorithm - never share an id. That randomness is orthogonal
+        // to whether the merge logic itself is equivalent.
+        assertEquals(
+            expected.messageNodes.map { it.messages to it.selectIndex },
+            actual.messageNodes.map { it.messages to it.selectIndex },
+        )
+    }
+
+    /**
+     * Reference copy of the nested per-message scan `mergeGeneratedMessages` used before issue
+     * #109's HashMap lookup, kept here only to prove the replacement is behaviorally identical.
+     */
+    private fun oldMergeGeneratedMessages(
+        conversation: Conversation,
+        view: CompactedMessageView,
+        generatedMessages: List<UIMessage>,
+    ): Conversation {
+        val inputSize = view.messages.size
+        val nodes = conversation.messageNodes.toMutableList()
+        generatedMessages.forEachIndexed { index, message ->
+            val nodeIndex = nodes.indexOfFirst { node ->
+                node.messages.any { it.id == message.id }
+            }
+            if (nodeIndex >= 0) {
+                val node = nodes[nodeIndex]
+                val messageIndex = node.messages.indexOfFirst { it.id == message.id }
+                val replacement = ContextCompactionPresentation.preserveDisplayTools(
+                    previous = node.messages[messageIndex],
+                    replacement = message,
+                )
+                if (node.messages[messageIndex] != replacement) {
+                    nodes[nodeIndex] = node.copy(
+                        messages = node.messages.toMutableList().apply {
+                            this[messageIndex] = replacement
+                        },
+                    )
+                }
+            } else if (index >= inputSize) {
+                val boundaryNodeIndex = view.rawTailStartIndex + index - 1
+                if (boundaryNodeIndex <= nodes.lastIndex) {
+                    val node = nodes[boundaryNodeIndex]
+                    val newMessages = node.messages + message
+                    nodes[boundaryNodeIndex] = node.copy(
+                        messages = newMessages,
+                        selectIndex = newMessages.lastIndex,
+                    )
+                } else {
+                    nodes += message.toMessageNode()
+                }
+            }
+        }
+
+        return conversation.copy(messageNodes = nodes)
     }
 }
