@@ -488,6 +488,105 @@ class ChatCompletionsRequestMessageTest {
         )
     }
 
+    // ==================== Image lift ordering tests (issue #104) ====================
+    // A parallel tool batch where a non-last result carries an image used to lift an
+    // extra role:"user" message in between the tool results, which providers reject as
+    // "no tool output found for tool call". These tests guard that all tool results of a
+    // batch stay contiguous and the lift, if any, comes after all of them.
+
+    @Test
+    fun `parallel tool batch with an early image keeps tool results contiguous and lifts once at the end`() {
+        val assistantMessage = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(
+                UIMessagePart.Text("Running three tools"),
+                createExecutedToolWithImage("call_1", "take_screenshot", "{}"),
+                createExecutedTool("call_2", "search_docs", """{"query": "test2"}""", "Result 2"),
+                createExecutedTool("call_3", "search_wiki", """{"query": "test3"}""", "Result 3"),
+            )
+        )
+
+        val messages = listOf(UIMessage.user("Do three things"), assistantMessage)
+
+        val result = invokeBuildMessages(messages)
+
+        var assistantIndex = -1
+        for (i in result.indices) {
+            val msg = result[i].jsonObject
+            if (msg["role"]?.jsonPrimitive?.content == "assistant" && msg.containsKey("tool_calls")) {
+                assistantIndex = i
+                break
+            }
+        }
+        assertTrue("Should find assistant with tool_calls", assistantIndex >= 0)
+
+        // The three tool results must immediately follow, in call order, no foreign
+        // message (like the old inline lift) in between.
+        val expectedCallIds = listOf("call_1", "call_2", "call_3")
+        val toolMessages = (1..3).map { offset -> result[assistantIndex + offset].jsonObject }
+        toolMessages.forEachIndexed { i, msg ->
+            assertEquals("tool", msg["role"]?.jsonPrimitive?.content)
+            assertEquals(expectedCallIds[i], msg["tool_call_id"]?.jsonPrimitive?.content)
+            assertTrue("tool content must always be a string", msg["content"] is JsonPrimitive)
+        }
+        assertEquals(
+            "[Image output attached in the following user message]",
+            toolMessages[0]["content"]?.jsonPrimitive?.content
+        )
+
+        // Exactly one lift message, placed right after the last tool result of the batch.
+        val liftMessage = result[assistantIndex + 4].jsonObject
+        assertEquals("user", liftMessage["role"]?.jsonPrimitive?.content)
+        val liftContent = liftMessage["content"]!!.jsonArray
+        assertTrue(
+            "lift message should carry the image",
+            liftContent.any { it.jsonObject["type"]?.jsonPrimitive?.content == "image_url" }
+        )
+
+        // No tool message anywhere should carry array content, and there should be no
+        // other lift message for this batch.
+        assertEquals(3, result.count { it.jsonObject["role"]?.jsonPrimitive?.content == "tool" })
+        result.forEach { element ->
+            if (element.jsonObject["role"]?.jsonPrimitive?.content == "tool") {
+                assertTrue("tool content must never be an array", element.jsonObject["content"] is JsonPrimitive)
+            }
+        }
+        val userLiftMessages = result.filter { element ->
+            val content = element.jsonObject["content"]
+            content is JsonArray && content.any { it.jsonObject["type"]?.jsonPrimitive?.content == "image_url" }
+        }
+        assertEquals(1, userLiftMessages.size)
+    }
+
+    @Test
+    fun `parallel tool batch with an early image emits no lift for a text-only model`() {
+        val assistantMessage = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(
+                createExecutedToolWithImage("call_1", "take_screenshot", "{}"),
+                createExecutedTool("call_2", "search_docs", """{"query": "test2"}""", "Result 2"),
+            )
+        )
+
+        val messages = listOf(UIMessage.user("Do two things"), assistantMessage)
+
+        val result = invokeBuildMessages(messages, supportInputModalities = listOf(Modality.TEXT))
+
+        val userMessages = result.filter { it.jsonObject["role"]?.jsonPrimitive?.content == "user" }
+        assertEquals("no lift message should be emitted for a text-only model", 1, userMessages.size)
+
+        val toolMessages = result.filter { it.jsonObject["role"]?.jsonPrimitive?.content == "tool" }
+        assertEquals(2, toolMessages.size)
+        val imageToolMessage = toolMessages.first {
+            it.jsonObject["tool_call_id"]?.jsonPrimitive?.content == "call_1"
+        }
+        assertEquals(
+            imagePlaceholder,
+            imageToolMessage.jsonObject["content"]?.jsonPrimitive?.content
+        )
+        assertTrue("tool content must always be a string", imageToolMessage.jsonObject["content"] is JsonPrimitive)
+    }
+
     @Test
     fun `assistant should preserve OpenRouter reasoning details`() {
         val reasoningDetails = buildJsonArray {

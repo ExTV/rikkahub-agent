@@ -567,6 +567,78 @@ class ResponseApiRequestMessageTest {
         )
     }
 
+    // ==================== Image lift removal tests (issue #104) ====================
+    // The Responses API allows input_image inline inside function_call_output.output,
+    // which is in-spec, so no extra role:"user" lift item should ever be emitted; that
+    // used to split a batch's function_call/function_call_output pairing.
+
+    @Test
+    fun `parallel tool batch with an early image keeps the image inline with no lift item`() {
+        val assistantMessage = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(
+                UIMessagePart.Text("Running three tools"),
+                createExecutedToolWithImage("call_1", "take_screenshot", "{}"),
+                createExecutedTool("call_2", "search_docs", "{}", "Result 2"),
+                createExecutedTool("call_3", "search_wiki", "{}", "Result 3"),
+            )
+        )
+
+        val messages = listOf(UIMessage.user("Do three things"), assistantMessage)
+
+        val result = invokeBuildMessages(messages)
+
+        val output1 = result.first {
+            it.jsonObject["type"]?.jsonPrimitive?.content == "function_call_output" &&
+                it.jsonObject["call_id"]?.jsonPrimitive?.content == "call_1"
+        }.jsonObject
+        val outputContent = output1["output"]!!.jsonArray
+        assertTrue(
+            "function_call_output should carry the image inline",
+            outputContent.any { it.jsonObject["type"]?.jsonPrimitive?.content == "input_image" }
+        )
+
+        // No lifted USER item beyond the original user turn.
+        val userItems = result.filter { it.jsonObject["role"]?.jsonPrimitive?.content == "user" }
+        assertEquals("no lifted user item should be emitted", 1, userItems.size)
+
+        // function_call/function_call_output pairing must stay contiguous for the batch.
+        val toolItems = result.filter {
+            it.jsonObject["type"]?.jsonPrimitive?.content in setOf("function_call", "function_call_output")
+        }
+        assertEquals(
+            listOf(
+                "function_call", "function_call", "function_call",
+                "function_call_output", "function_call_output", "function_call_output",
+            ),
+            toolItems.map { it.jsonObject["type"]?.jsonPrimitive?.content },
+        )
+    }
+
+    @Test
+    fun `parallel tool batch with an early image emits no lift for a text-only model`() {
+        val assistantMessage = UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = listOf(
+                createExecutedToolWithImage("call_1", "take_screenshot", "{}"),
+                createExecutedTool("call_2", "search_docs", "{}", "Result 2"),
+            )
+        )
+
+        val messages = listOf(UIMessage.user("Do two things"), assistantMessage)
+
+        val result = invokeBuildMessages(messages, supportInputModalities = listOf(Modality.TEXT))
+
+        val userItems = result.filter { it.jsonObject["role"]?.jsonPrimitive?.content == "user" }
+        assertEquals("no lift item should be emitted for a text-only model", 1, userItems.size)
+
+        val output1 = result.first {
+            it.jsonObject["type"]?.jsonPrimitive?.content == "function_call_output" &&
+                it.jsonObject["call_id"]?.jsonPrimitive?.content == "call_1"
+        }.jsonObject
+        assertEquals(imagePlaceholder, output1["output"]?.jsonPrimitive?.content)
+    }
+
     @Test
     fun `function tools and built-in tools should coexist in the same tools array`() {
         val requestBody = invokeBuildRequestBody(
