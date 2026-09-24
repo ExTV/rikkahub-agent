@@ -2,7 +2,9 @@ package me.rerere.rikkahub.shizuku
 
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -44,8 +46,7 @@ class ShizukuBindFailureTest {
     }
 
     @Test
-    fun `existing error and recovery fields are unchanged across all phases`() {
-        val expectedRecovery = "Could not bind the Shizuku user service. Retry; if it keeps failing, restart the Shizuku service and re-grant permission from Settings -> Shizuku."
+    fun `error field is shizuku_bind_failed across all phases`() {
         for (failure in listOf(
             BindResult.Failure.BindThrew(RuntimeException("x")),
             BindResult.Failure.BindingDied,
@@ -53,8 +54,24 @@ class ShizukuBindFailureTest {
         )) {
             val response = bindFailedResponse(failure)
             assertEquals("shizuku_bind_failed", response["error"]!!.jsonPrimitive.content)
-            assertEquals(expectedRecovery, response["recovery"]!!.jsonPrimitive.content)
         }
+    }
+
+    @Test
+    fun `bind_threw and binding_died keep the re-grant recovery text`() {
+        val expectedRecovery = "Could not bind the Shizuku user service. Retry; if it keeps failing, restart the Shizuku service and re-grant permission from Settings -> Shizuku."
+        for (failure in listOf(BindResult.Failure.BindThrew(RuntimeException("x")), BindResult.Failure.BindingDied)) {
+            assertEquals(expectedRecovery, bindFailedResponse(failure)["recovery"]!!.jsonPrimitive.content)
+        }
+    }
+
+    @Test
+    fun `bind_timeout recovery points at a stale Shizuku server, not permission`() {
+        // A timeout means the server accepted the bind (an unauthorised caller fails at
+        // bind_threw), so re-granting cannot help; an outdated running server can (#45).
+        val recovery = bindFailedResponse(BindResult.Failure.Timeout)["recovery"]!!.jsonPrimitive.content
+        assertTrue(recovery.contains("older than"))
+        assertFalse(recovery.contains("re-grant"))
     }
 
     @Test

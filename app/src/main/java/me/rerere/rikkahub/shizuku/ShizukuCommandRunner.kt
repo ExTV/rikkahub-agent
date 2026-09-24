@@ -30,6 +30,10 @@ internal object ShizukuCommandRunner {
             }
         }
 
+        // Give stdin an immediate EOF: a command that reads it (`cat` with no file, a prompt)
+        // would otherwise block until timeoutMs and capture nothing.
+        runCatching { process.outputStream.close() }
+
         val stdoutSink = BoundedOutputStream(maxStdoutBytes)
         val stderrSink = BoundedOutputStream(maxStderrBytes)
         // Drain both streams concurrently on daemon threads. A command that fills its stdout

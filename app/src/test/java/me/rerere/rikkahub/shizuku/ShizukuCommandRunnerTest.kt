@@ -33,6 +33,20 @@ class ShizukuCommandRunnerTest {
     }
 
     @Test
+    fun `a command that reads stdin gets EOF instead of hanging until the timeout`() {
+        // `cat` with no file blocks on stdin; with stdin left open it runs out the full timeout
+        // and captures nothing, which looks like a transport failure.
+        val result = ShizukuCommandRunner.run(
+            command = "cat; echo done",
+            timeoutMs = 5_000,
+            maxStdoutBytes = 8_000,
+            maxStderrBytes = 8_000,
+        )
+        assertTrue(result["success"]!!.jsonPrimitive.boolean)
+        assertEquals("done\n", result["stdout"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun `nonzero exit code is reported as unsuccessful`() {
         val result = ShizukuCommandRunner.run(
             command = "exit 3",
