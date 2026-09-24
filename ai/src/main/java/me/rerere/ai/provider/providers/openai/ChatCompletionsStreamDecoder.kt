@@ -123,8 +123,10 @@ internal class ChatCompletionsStreamDecoder : StreamChunkDecoder {
                     if (imageObject["type"]?.jsonPrimitive?.contentOrNull != "image_url") return@forEach
                     val url = imageObject["image_url"]?.jsonObjectOrNull
                         ?.get("url")?.jsonPrimitive?.contentOrNull ?: return@forEach
-                    require(url.startsWith("data:image")) { "Only data uri is supported" }
-                    add(UIMessagePart.Image(url.substringAfter("data:image/png;base64,")))
+                    // Mime-agnostic parse (png/jpeg/webp/...); see parseImageDataUri for why the
+                    // old png-hardcoded substring was wrong for other mimes and non-data URLs.
+                    val parsed = parseImageDataUri(url) ?: return@forEach
+                    add(UIMessagePart.Image(parsed.base64))
                 }
             },
             annotations = parseAnnotations(payload["annotations"]?.jsonArrayOrNull ?: JsonArray(emptyList())),

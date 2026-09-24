@@ -7,6 +7,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
+import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -117,6 +118,47 @@ class StreamTraceReplayTest {
             ResponseApiStreamDecoder(),
         )
     }
+
+    @Test
+    fun `chat completions stream decoder extracts base64 payload for png and jpeg data uris`() {
+        assertEquals("AAAA", firstImageDeltaData("data:image/png;base64,AAAA"))
+        assertEquals("AAAA", firstImageDeltaData("data:image/jpeg;base64,AAAA"))
+    }
+
+    @Test
+    fun `chat completions stream decoder skips a non-data-uri image instead of throwing`() {
+        // Regression: accept() used to require() a data uri and throw for a plain http(s) url,
+        // which killed the whole stream instead of just dropping the one unusable image.
+        val chunks = ChatCompletionsStreamDecoder().accept(imageStreamEvent("https://example.com/pic.png")).chunks
+        assertTrue("$chunks should not start an image for a non-data-uri url", chunks.none { it is StreamChunk.ImageStart })
+    }
+
+    private fun firstImageDeltaData(dataUri: String): String =
+        ChatCompletionsStreamDecoder().accept(imageStreamEvent(dataUri)).chunks
+            .filterIsInstance<StreamChunk.ImageDelta>()
+            .single()
+            .data
+
+    private fun imageStreamEvent(url: String): SseEvent = SseEvent(
+        data = buildJsonObject {
+            put("id", "resp-1")
+            putJsonArray("choices") {
+                addJsonObject {
+                    putJsonObject("delta") {
+                        put("role", "assistant")
+                        putJsonArray("images") {
+                            addJsonObject {
+                                put("type", "image_url")
+                                putJsonObject("image_url") {
+                                    put("url", url)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }.toString(),
+    )
 
     private fun assertTrace(
         path: String,
