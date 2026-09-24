@@ -155,6 +155,7 @@ Download the latest `*-release.apk` from [Releases](https://github.com/ExTV/rikk
 **Settings → Providers → pick one → paste your API key.**
 
 - **OpenRouter** — first-class support with auto-detected model capabilities, pricing, and routing, plus a fallback model list tried in order when your primary is down, rate-limited, or refuses
+  - Image generation works with OpenRouter's image models (FLUX.2, Seedream, Recraft, Qwen Image, gpt-image, and more), including aspect ratio and reference images
 - **Codex** — sign in with your ChatGPT account (OpenAI plan over OAuth)
 - **Grok** — sign in with your xAI account (SuperGrok or X Premium+ over OAuth)
 - **Local · LiteRT** — download a local model (Gemma, Qwen). No key, no network. Runs on-device with GPU acceleration where supported
