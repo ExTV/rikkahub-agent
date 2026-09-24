@@ -1040,6 +1040,14 @@ class GenerationLoop(
                                 output = maybeTruncateToolOutput(tool.toolCallId, result, hasShellAccess)
                             )
                         }.onFailure {
+                            // runCatching also captures CancellationException (e.g. the user
+                            // pressed stop mid tool execution). That must propagate, not turn
+                            // into a tool_failed envelope: a swallowed cancellation leaves a
+                            // misleading tool_failed result instead of the clean
+                            // cancelled-by-user one from cancelToolByUser, and the loop may
+                            // wrongly continue to the next sibling tool. Same pattern as the
+                            // catch above this runCatching block.
+                            if (it is CancellationException) throw it
                             // Stack trace stays in logcat for debugging; the JSON envelope
                             // sent BACK to the LLM gets just the exception's message and a
                             // short class hint. Stuffing the full multi-frame R8-obfuscated
