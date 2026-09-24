@@ -260,7 +260,17 @@ object ShizukuManager {
             deferred = bindWaiter!!
         }
         if (needBind) startBind(context, deferred)
-        return withTimeoutOrNull(BIND_TIMEOUT_MS) { deferred.await() } ?: BindResult.Failure.Timeout
+        val result = withTimeoutOrNull(BIND_TIMEOUT_MS) { deferred.await() }
+        if (result != null) return result
+        // No connection callback arrived in time. Clear the waiter so the next call starts a
+        // fresh bind instead of awaiting this same dead deferred forever (a bind that never
+        // calls back would otherwise wedge every future call until process restart). Only
+        // clear it if it is still ours. The stale connection is left alone: if its callback
+        // arrives late it installs a live service, and completing the orphaned deferred is harmless.
+        bindLock.withLock {
+            if (bindWaiter === deferred) bindWaiter = null
+        }
+        return BindResult.Failure.Timeout
     }
 
     private fun startBind(context: Context, deferred: CompletableDeferred<BindResult>) {
