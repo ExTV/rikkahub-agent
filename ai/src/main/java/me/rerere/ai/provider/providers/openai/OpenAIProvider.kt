@@ -78,8 +78,15 @@ class OpenAIProvider(
     override suspend fun listModels(providerSetting: ProviderSetting.OpenAI): List<Model> =
         withContext(Dispatchers.IO) {
             val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
+            // OpenRouter's /models returns text-output models only by default, which hides the
+            // image-only models (FLUX, Recraft, Seedream, ...). Ask for text and image explicitly.
+            val modelsUrl = if (providerSetting.baseUrl.contains("openrouter.ai")) {
+                "${providerSetting.baseUrl}/models?output_modalities=text,image"
+            } else {
+                "${providerSetting.baseUrl}/models"
+            }
             val request = Request.Builder()
-                .url("${providerSetting.baseUrl}/models")
+                .url(modelsUrl)
                 .addHeader("Authorization", "Bearer $key")
                 .get()
                 .build()
@@ -257,10 +264,27 @@ class OpenAIProvider(
 
         val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
 
-        // OpenRouter has no /images/generations endpoint (that 404s to its website). Image
-        // generation goes through /chat/completions with modalities:["image","text"].
+        // OpenRouter has a dedicated Images API for image-only models (FLUX.2, Recraft,
+        // Seedream, gpt-image, Qwen-Image, ...) that never speak /chat/completions with
+        // modalities:["image","text"]. Fall back to that older chat-completions path only
+        // when /images itself 404s/405s (an OpenRouter-compatible proxy without it) - decided
+        // once, on the first attempt, and reused for the rest. Neither path takes `n` (see
+        // buildOpenRouterImagesRequestBody), so count > 1 is emulated with sequential calls.
         if (providerSetting.baseUrl.contains("openrouter.ai", ignoreCase = true)) {
-            generateImageViaChatCompletions(providerSetting, params, key).forEach { emit(it) }
+            var useChatCompletionsFallback = false
+            val items = withContext(Dispatchers.IO) {
+                collectSequentialImages(params.numOfImages.coerceAtLeast(1)) {
+                    if (useChatCompletionsFallback) {
+                        generateImageViaChatCompletions(providerSetting, params, key)
+                    } else {
+                        generateImageViaOpenRouterImages(providerSetting, params, key) ?: run {
+                            useChatCompletionsFallback = true
+                            generateImageViaChatCompletions(providerSetting, params, key)
+                        }
+                    }
+                }
+            }
+            items.forEach { emit(it) }
             return@flow
         }
 
@@ -308,34 +332,55 @@ class OpenAIProvider(
         items.forEach { emit(it) }
     }
 
+    /**
+     * OpenRouter image generation via the dedicated `POST {baseUrl}/images` endpoint. Returns
+     * null (rather than throwing) when the endpoint itself looks missing (405, or a 404 whose
+     * body isn't OpenRouter's JSON error shape - e.g. an HTML/empty body from a proxy that
+     * never added it), so the caller can fall back to the older `/chat/completions` image
+     * path. A per-model 404 ("model not found", a real JSON error body) is surfaced instead.
+     */
+    private suspend fun generateImageViaOpenRouterImages(
+        providerSetting: ProviderSetting.OpenAI,
+        params: ImageGenerationParams,
+        key: String,
+        inputReferences: List<String> = emptyList(),
+    ): List<ImageGenerationItem>? {
+        val body = buildOpenRouterImagesRequestBody(
+            model = params.model,
+            prompt = params.prompt,
+            aspectRatio = params.aspectRatio,
+            inputReferences = inputReferences,
+        ).mergeCustomBody(params.customBody)
+
+        val request = Request.Builder()
+            .url("${providerSetting.baseUrl}/images")
+            .headers(params.customHeaders.toHeaders())
+            .addHeader("Authorization", "Bearer $key")
+            .addHeader("Content-Type", "application/json")
+            .post(json.encodeToString(body).toRequestBody("application/json".toMediaType()))
+            .configureReferHeaders(providerSetting.baseUrl)
+            .build()
+
+        val response = client.newCall(request).await()
+        val bodyStr = response.body.string()
+        if (shouldFallbackToChatCompletionsImage(response.code, bodyStr)) return null
+        if (!response.isSuccessful) {
+            error(extractOpenRouterErrorMessage(response.code, bodyStr))
+        }
+        return parseOpenRouterImagesResponse(bodyStr)
+    }
+
     /** OpenRouter image generation via /chat/completions with modalities:["image","text"]. */
     private suspend fun generateImageViaChatCompletions(
         providerSetting: ProviderSetting.OpenAI,
         params: ImageGenerationParams,
         key: String,
     ): List<ImageGenerationItem> {
-        val body = buildJsonObject {
-            put("model", params.model.modelId)
-            putJsonArray("messages") {
-                add(buildJsonObject {
-                    put("role", "user")
-                    put("content", params.prompt)
-                })
-            }
-            putJsonArray("modalities") {
-                add("image")
-                add("text")
-            }
-            put("image_config", buildJsonObject {
-                put(
-                    "aspect_ratio", when (params.aspectRatio) {
-                        ImageAspectRatio.SQUARE -> "1:1"
-                        ImageAspectRatio.LANDSCAPE -> "16:9"
-                        ImageAspectRatio.PORTRAIT -> "9:16"
-                    }
-                )
-            })
-        }.mergeCustomBody(params.customBody)
+        val body = buildOpenRouterChatCompletionsImageBody(
+            modelId = params.model.modelId,
+            prompt = params.prompt,
+            aspectRatio = params.aspectRatio,
+        ).mergeCustomBody(params.customBody)
 
         val request = Request.Builder()
             .url("${providerSetting.baseUrl}${providerSetting.chatCompletionsPath}")
@@ -343,6 +388,7 @@ class OpenAIProvider(
             .addHeader("Authorization", "Bearer $key")
             .addHeader("Content-Type", "application/json")
             .post(json.encodeToString(body).toRequestBody("application/json".toMediaType()))
+            .configureReferHeaders(providerSetting.baseUrl)
             .build()
 
         val response = client.newCall(request).await()
@@ -350,24 +396,38 @@ class OpenAIProvider(
         if (!response.isSuccessful) {
             error("Failed to generate image: ${response.code} $bodyStr")
         }
-        val message = json.parseToJsonElement(bodyStr).jsonObject["choices"]?.jsonArray
-            ?.getOrNull(0)?.jsonObject?.get("message")?.jsonObject
-            ?: error("No choices in image response")
-        val images = message["images"]?.jsonArray ?: JsonArray(emptyList())
-        val items = images.mapNotNull { img ->
-            val url = img.jsonObject["image_url"]?.jsonObject?.get("url")
-                ?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-            val parsed = parseImageDataUri(url) ?: return@mapNotNull null
-            ImageGenerationItem(data = parsed.base64, mimeType = parsed.mime)
+        return parseOpenRouterChatCompletionsImageResponse(bodyStr)
+    }
+
+    /** OpenRouter image edit via /chat/completions with input images as image_url content parts. */
+    private suspend fun editImageViaChatCompletions(
+        providerSetting: ProviderSetting.OpenAI,
+        params: ImageEditParams,
+        key: String,
+        inputReferences: List<String>,
+    ): List<ImageGenerationItem> {
+        val body = buildOpenRouterChatCompletionsImageBody(
+            modelId = params.model.modelId,
+            prompt = params.prompt,
+            aspectRatio = params.aspectRatio,
+            inputReferences = inputReferences,
+        ).mergeCustomBody(params.customBody)
+
+        val request = Request.Builder()
+            .url("${providerSetting.baseUrl}${providerSetting.chatCompletionsPath}")
+            .headers(params.customHeaders.toHeaders())
+            .addHeader("Authorization", "Bearer $key")
+            .addHeader("Content-Type", "application/json")
+            .post(json.encodeToString(body).toRequestBody("application/json".toMediaType()))
+            .configureReferHeaders(providerSetting.baseUrl)
+            .build()
+
+        val response = client.newCall(request).await()
+        val bodyStr = response.body.string()
+        if (!response.isSuccessful) {
+            error("Failed to edit image: ${response.code} $bodyStr")
         }
-        if (items.isEmpty()) {
-            val text = message["content"]?.jsonPrimitive?.contentOrNull
-            error(
-                "No image returned. The model may not support image output or returned text only." +
-                    (text?.takeIf { it.isNotBlank() }?.let { " Model said: $it" } ?: "")
-            )
-        }
-        return items
+        return parseOpenRouterChatCompletionsImageResponse(bodyStr)
     }
 
     override suspend fun editImage(
@@ -382,6 +442,43 @@ class OpenAIProvider(
         }
 
         val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
+
+        // Same dedicated-endpoint-first, chat-completions-fallback rule as generateImage
+        // (decided once, on the first attempt), with the source images always sent as
+        // input_references (data URIs) - their presence is the edit request itself, not a
+        // capability to gate on. `n` is never sent; count > 1 is sequential calls.
+        if (providerSetting.baseUrl.contains("openrouter.ai", ignoreCase = true)) {
+            val inputReferences = withContext(Dispatchers.IO) {
+                params.images.map { path ->
+                    val file = File(path)
+                    require(file.exists()) { "Image file does not exist: $path" }
+                    file.toDataUri()
+                }
+            }
+            val genParams = ImageGenerationParams(
+                model = params.model,
+                prompt = params.prompt,
+                aspectRatio = params.aspectRatio,
+                customHeaders = params.customHeaders,
+                customBody = params.customBody,
+            )
+            var useChatCompletionsFallback = false
+            val items = withContext(Dispatchers.IO) {
+                collectSequentialImages(params.numOfImages.coerceAtLeast(1)) {
+                    if (useChatCompletionsFallback) {
+                        editImageViaChatCompletions(providerSetting, params, key, inputReferences)
+                    } else {
+                        generateImageViaOpenRouterImages(providerSetting, genParams, key, inputReferences) ?: run {
+                            useChatCompletionsFallback = true
+                            editImageViaChatCompletions(providerSetting, params, key, inputReferences)
+                        }
+                    }
+                }
+            }
+            items.forEach { emit(it) }
+            return@flow
+        }
+
         val bodyBuilder = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart("model", params.model.modelId)
@@ -486,6 +583,9 @@ class OpenAIProvider(
         "webp" -> "image/webp"
         else -> "image/png"
     }
+
+    @OptIn(ExperimentalEncodingApi::class)
+    private fun File.toDataUri(): String = "data:${imageMediaType()};base64,${Base64.encode(readBytes())}"
 
     private fun String.toImageMimeType(): String = when (lowercase()) {
         "jpg", "jpeg" -> "image/jpeg"
