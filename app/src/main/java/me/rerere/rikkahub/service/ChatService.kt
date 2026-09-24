@@ -7,6 +7,7 @@ import android.util.Log
 import androidx.core.net.toUri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -358,6 +359,51 @@ private val outputTransformers by lazy {
     )
 }
 
+/** Aux-generation kind tracked by [AuxJobRegistry]. */
+internal enum class AuxJobKind { TITLE, SUGGESTION }
+
+/**
+ * Tracks the in-flight title/suggestion job per (conversation, kind) so a burst of aux
+ * generations can't pile up against the same llama.cpp server slot and evict the main
+ * conversation's cached prompt prefix. [launch] cancels-and-replaces any previous job
+ * registered for the same key; [cancelAll] cancels every job for one conversation without
+ * touching another conversation's. Jobs deregister themselves on completion (success,
+ * failure, or cancellation) so the map never accumulates entries for finished work.
+ * Extracted as a small dependency-free class so this is unit-testable without an Android
+ * runtime or a constructed [ChatService].
+ */
+internal class AuxJobRegistry {
+    private val jobs = ConcurrentHashMap<Pair<Uuid, AuxJobKind>, Job>()
+
+    fun launch(
+        scope: CoroutineScope,
+        conversationId: Uuid,
+        kind: AuxJobKind,
+        block: suspend () -> Unit,
+    ): Job {
+        val key = conversationId to kind
+        jobs[key]?.cancel()
+        // LAZY-start + register-before-start (mirrors ConversationSession.setJob) so the
+        // completion handler below can never fire before the job is in the map.
+        val job = scope.launch(start = CoroutineStart.LAZY) { block() }
+        job.invokeOnCompletion { jobs.remove(key, job) }
+        jobs[key] = job
+        job.start()
+        return job
+    }
+
+    fun cancelAll(conversationId: Uuid) {
+        jobs.keys
+            .filter { it.first == conversationId }
+            .forEach { key -> jobs[key]?.cancel() }
+    }
+
+    /** True while a job is registered for this key. Test-observability hook for the
+     *  deregister-on-completion guarantee [launch] documents. */
+    internal fun isTracked(conversationId: Uuid, kind: AuxJobKind): Boolean =
+        jobs.containsKey(conversationId to kind)
+}
+
 class ChatService(
     private val context: Application,
     private val appScope: AppScope,
@@ -384,6 +430,9 @@ class ChatService(
     // 统一会话管理
     private val sessions = ConcurrentHashMap<Uuid, ConversationSession>()
     private val _sessionsVersion = MutableStateFlow(0L)
+
+    // Title/suggestion aux-generation jobs, keyed per conversation - see AuxJobRegistry.
+    private val auxJobs = AuxJobRegistry()
 
     /**
      * Per-conversation mutex serialising state-mutating operations: handleToolApproval,
@@ -609,6 +658,24 @@ class ChatService(
         conversationId: Uuid,
         block: suspend () -> Unit
     ): Job = appScope.launch {
+        addConversationReference(conversationId)
+        try {
+            block()
+        } finally {
+            removeConversationReference(conversationId)
+        }
+    }
+
+    /**
+     * Like [launchWithConversationReference], but goes through [auxJobs] so launching this
+     * [kind] for [conversationId] again cancels-and-replaces the previous one, and a new main
+     * generation can cancel every aux job for that conversation via [AuxJobRegistry.cancelAll].
+     */
+    private fun launchAuxJob(
+        conversationId: Uuid,
+        kind: AuxJobKind,
+        block: suspend () -> Unit,
+    ): Job = auxJobs.launch(appScope, conversationId, kind) {
         addConversationReference(conversationId)
         try {
             block()
@@ -865,6 +932,10 @@ class ChatService(
                 if (session.submittingMessage?.id == queued.id) session.submittingMessage = null
             }
         }
+        // A fresh main generation makes any in-flight title/suggestion request for this
+        // conversation redundant, and letting it keep running alongside the new request just
+        // adds a second concurrent connection to the same server (see AuxJobRegistry kdoc).
+        auxJobs.cancelAll(conversationId)
         session.setJob(job)
         return job
     }
@@ -1058,6 +1129,10 @@ class ChatService(
             }
         }
 
+        // Same reasoning as sendQueuedMessage: a regenerate is a fresh main generation, so
+        // drop any in-flight title/suggestion request for this conversation instead of
+        // racing it against the regenerate.
+        auxJobs.cancelAll(conversationId)
         session.setJob(job)
     }
 
@@ -1921,12 +1996,12 @@ class ChatService(
                 )
             } else {
                 saveConversation(conversationId, finalConversation)
-                launchWithConversationReference(conversationId) {
+                launchAuxJob(conversationId, AuxJobKind.SUGGESTION) {
                     generateSuggestion(conversationId, finalConversation)
                 }
             }
 
-            launchWithConversationReference(conversationId) {
+            launchAuxJob(conversationId, AuxJobKind.TITLE) {
                 generateTitle(conversationId, finalConversation)
             }
         }

@@ -9,6 +9,7 @@ import android.widget.Toast
 import me.rerere.rikkahub.BuildConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,6 +18,7 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.retryWhen
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import me.rerere.rikkahub.service.AgentOverlay
 import me.rerere.rikkahub.service.RikkaAccessibilityService
@@ -663,6 +665,52 @@ class GenerationLoop(
                             }
                             messages = messages.dropLast(1) + lastMsg.copy(parts = newParts)
                             emit(GenerationChunk.Messages(messages))
+                        }
+                    } else {
+                        // A stop mid-turn must leave the assistant message finalized the same
+                        // way a normal completion does below (e.g. ThinkTagTransformer closing
+                        // an unclosed <think> block) — otherwise stopGeneration persists a shape
+                        // the rest of the app never produces on its own. Reuse the exact same
+                        // transformer chain calls the success path runs, just before rethrowing.
+                        // The coroutine's Job is already cancelled here, so a plain suspend call
+                        // (transformer I/O, or emit reaching ChatService's collector and its own
+                        // suspend writes) would immediately re-throw — run under NonCancellable,
+                        // same as ChatService's own onCompletion persist for this exact reason.
+                        //
+                        // This flow ends in .flowOn(Dispatchers.IO), so this block runs in the
+                        // upstream producer coroutine: emit() can still throw (e.g. the
+                        // downstream channel already closed because the consumer tore down
+                        // first) even under NonCancellable. That must never replace the
+                        // original CancellationException — best-effort only: log and fall
+                        // through to the unconditional rethrow below regardless.
+                        // (stopGeneration itself persists after joining these jobs, so skipping
+                        // this finalize on failure is safe — see ChatService.stopGeneration.)
+                        try {
+                            withContext(NonCancellable) {
+                                messages = messages.visualTransforms(
+                                    transformers = outputTransformers,
+                                    context = context,
+                                    model = model,
+                                    assistant = assistant,
+                                    settings = settings
+                                )
+                                messages = messages.onGenerationFinish(
+                                    transformers = outputTransformers,
+                                    context = context,
+                                    model = model,
+                                    assistant = assistant,
+                                    settings = settings
+                                )
+                                if (messages.isNotEmpty()) {
+                                    messages = messages.slice(0 until messages.lastIndex) + messages.last().copy(
+                                        finishedAt = Clock.System.now()
+                                            .toLocalDateTime(TimeZone.currentSystemDefault())
+                                    )
+                                }
+                                emit(GenerationChunk.Messages(messages))
+                            }
+                        } catch (finalizeError: Throwable) {
+                            Log.w(TAG, "generateText: cancellation finalize failed, stop proceeds without it", finalizeError)
                         }
                     }
                     throw t
