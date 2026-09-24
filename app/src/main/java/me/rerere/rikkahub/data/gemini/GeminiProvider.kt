@@ -1,15 +1,19 @@
 package me.rerere.rikkahub.data.gemini
 
 import android.util.Log
+import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ProducerScope
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.onFailure
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -43,7 +47,6 @@ import me.rerere.ai.util.HttpException
 import me.rerere.ai.util.stringSafe
 import me.rerere.ai.util.toHeaders
 import me.rerere.common.android.Logging
-import me.rerere.common.http.await
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -72,19 +75,18 @@ class GeminiProvider(
         providerSetting: ProviderSetting.GeminiOAuth,
     ): List<Model> = withContext(Dispatchers.IO) {
         val account = repository.acquireAccount()
-        val response = client.newCall(
+        val outcome = client.postWithEndpointFallback(GEMINI_GENERATE_ENDPOINTS, json) { endpoint ->
             Request.Builder()
-                .url("${GeminiAccountRepository.CODE_ASSIST_ENDPOINT}/v1internal:fetchAvailableModels")
+                .url("$endpoint/v1internal:fetchAvailableModels")
                 .antigravityHeaders(account.accessToken)
                 .post("{}".toRequestBody(JSON_MEDIA_TYPE))
                 .build()
-        ).await()
-        val body = response.body.string()
-        if (!response.isSuccessful) {
-            if (response.code == 401) repository.markInvalid(account.id)
-            error("Failed to list Gemini models: ${response.code} $body")
         }
-        mapAvailableModels(body, json)
+        if (!outcome.successful) {
+            if (outcome.code == 401) repository.markInvalid(account.id)
+            error("Failed to list Gemini models: ${outcome.code} ${outcome.body}")
+        }
+        mapAvailableModels(outcome.body, json)
     }
 
     override suspend fun generateText(
@@ -119,21 +121,84 @@ class GeminiProvider(
                 "request",
                 raiseMaxTokensAboveThinkingBudget(
                     raiseThinkingBudgetToClaudeFloor(
-                        wire.buildCompletionRequestBody(messages, params, CODE_ASSIST_SAFETY_CATEGORIES)
+                        stripThinkingConfigForGptOss(
+                            params.model.modelId,
+                            wire.buildCompletionRequestBody(messages, params, CODE_ASSIST_SAFETY_CATEGORIES)
+                        )
                     )
                 )
             )
         }
-        val request = Request.Builder()
-            .url("${GeminiAccountRepository.CODE_ASSIST_ENDPOINT}/v1internal:streamGenerateContent?alt=sse")
-            .headers(params.customHeaders.toHeaders())
-            .antigravityHeaders(account.accessToken)
-            .addHeader("Content-Type", "application/json")
-            .addHeader("Accept", "text/event-stream")
-            .post(json.encodeToString(requestBody).toRequestBody(JSON_MEDIA_TYPE))
-            .build()
-
+        val requestBodyText = json.encodeToString(requestBody)
         val adapter = GeminiStreamChunkAdapter()
+        var lastFailure: Throwable? = null
+
+        // Mirrors GEMINI_GENERATE_ENDPOINTS' fallback rule (see its doc comment): every endpoint
+        // but the last gets one attempt and hands off to the next on a transient failure; the
+        // last endpoint gets GEMINI_MAX_RETRIES extra attempts with backoff. A retry - whether the
+        // next endpoint or another attempt on this one - only ever happens before any chunk has
+        // been sent downstream, so a partial reply is never duplicated.
+        endpointLoop@ for (index in GEMINI_GENERATE_ENDPOINTS.indices) {
+            val endpoint = GEMINI_GENERATE_ENDPOINTS[index]
+            val isLastEndpoint = index == GEMINI_GENERATE_ENDPOINTS.lastIndex
+            val maxAttempts = if (isLastEndpoint) GEMINI_MAX_RETRIES + 1 else 1
+            for (attempt in 0 until maxAttempts) {
+                val request = Request.Builder()
+                    .url("$endpoint/v1internal:streamGenerateContent?alt=sse")
+                    .headers(params.customHeaders.toHeaders())
+                    .antigravityHeaders(account.accessToken)
+                    .addHeader("Content-Type", "application/json")
+                    .addHeader("Accept", "text/event-stream")
+                    .post(requestBodyText.toRequestBody(JSON_MEDIA_TYPE))
+                    .build()
+
+                when (val outcome = runStreamAttempt(request, adapter, account, params)) {
+                    is GeminiStreamAttemptOutcome.Success -> {
+                        trySend(adapter.finish())
+                        close()
+                        break@endpointLoop
+                    }
+
+                    is GeminiStreamAttemptOutcome.Failure -> {
+                        lastFailure = outcome.cause
+                        if (outcome.emitted || !outcome.classification.retryable) {
+                            close(outcome.cause)
+                            break@endpointLoop
+                        }
+                        if (attempt < maxAttempts - 1) {
+                            delay(resolveGeminiRetryDelayMs(outcome.classification, attempt))
+                        }
+                        // Otherwise this endpoint is exhausted; fall through to the next one.
+                    }
+                }
+            }
+        }
+        // Every branch above already closed the channel except the one where every endpoint and
+        // every retry was exhausted without a single chunk ever going out; close() is idempotent,
+        // so this is a no-op on every other path.
+        close(lastFailure ?: IllegalStateException("Cloud Code Assist request failed"))
+        // trySend silently drops a delta when the buffer is full, dropping characters mid-reply
+        // (#1295), so the buffer must be unbounded - same as the other providers' streamText.
+        awaitClose { }
+    }.buffer(Channel.UNLIMITED)
+
+    /**
+     * Runs one `streamGenerateContent` attempt and reports how it ended. Whether to retry - a
+     * different endpoint, another attempt on this one, or not at all - is [streamText]'s call; this
+     * function only needs to report whether anything was already sent downstream
+     * ([GeminiStreamAttemptOutcome.Failure.emitted]), since that is what makes a retry unsafe.
+     */
+    private suspend fun ProducerScope<StreamChunk>.runStreamAttempt(
+        request: Request,
+        adapter: GeminiStreamChunkAdapter,
+        account: GeminiAccount,
+        params: TextGenerationParams,
+    ): GeminiStreamAttemptOutcome = suspendCancellableCoroutine { cont ->
+        var emitted = false
+
+        fun resumeOnce(outcome: GeminiStreamAttemptOutcome) {
+            if (cont.isActive) cont.resume(outcome)
+        }
 
         val listener = object : EventSourceListener() {
             override fun onEvent(
@@ -145,12 +210,17 @@ class GeminiProvider(
                 try {
                     val payload = json.parseToJsonElement(data).jsonObject
                     payload["error"]?.jsonObject?.let { error ->
-                        close(
-                            IllegalStateException(
-                                "Cloud Code Assist error: " +
-                                    (error["message"]?.jsonPrimitive?.contentOrNull ?: "unknown")
+                        resumeOnce(
+                            GeminiStreamAttemptOutcome.Failure(
+                                cause = IllegalStateException(
+                                    "Cloud Code Assist error: " +
+                                        (error["message"]?.jsonPrimitive?.contentOrNull ?: "unknown")
+                                ),
+                                emitted = emitted,
+                                classification = classifyGeminiError(null, data, json),
                             )
                         )
+                        eventSource.cancel()
                         return
                     }
                     // Cloud Code Assist nests the ordinary Gemini payload one level down; a
@@ -159,11 +229,24 @@ class GeminiProvider(
                     val reason = inner["promptFeedback"]?.jsonObject
                         ?.get("blockReason")?.jsonPrimitive?.contentOrNull
                     if (reason != null) {
-                        close(IllegalStateException("Prompt feedback: $reason"))
+                        resumeOnce(
+                            GeminiStreamAttemptOutcome.Failure(
+                                cause = IllegalStateException("Prompt feedback: $reason"),
+                                emitted = emitted,
+                                classification = GeminiErrorClassification(
+                                    status = null,
+                                    reason = null,
+                                    retryDelayMs = null,
+                                    retryable = false,
+                                ),
+                            )
+                        )
+                        eventSource.cancel()
                         return
                     }
                     val chunk = wire.parseStreamCandidates(inner, params.model) ?: return
                     adapter.translate(chunk).forEach { streamChunk ->
+                        emitted = true
                         trySend(streamChunk).onFailure { e ->
                             Log.w(TAG, "onEvent: chunk dropped (${e?.message})")
                         }
@@ -177,23 +260,21 @@ class GeminiProvider(
                 if (response?.code == 401) {
                     launch { repository.markInvalid(account.id) }
                 }
-                close(
-                    resolveStreamFailureCause(t, response?.code, json) {
-                        response?.takeUnless { it.isSuccessful }?.body?.stringSafe()
-                    }
-                )
+                // Read once: resolveStreamFailureCause and classifyGeminiError both want the body,
+                // and a Response's body can only be consumed once.
+                val detailResult = runCatching { response?.takeUnless { it.isSuccessful }?.body?.stringSafe() }
+                val cause = resolveStreamFailureCause(t, response?.code, json) { detailResult.getOrThrow() }
+                val classification = classifyGeminiError(response?.code, detailResult.getOrNull(), json)
+                resumeOnce(GeminiStreamAttemptOutcome.Failure(cause, emitted, classification))
             }
 
             override fun onClosed(eventSource: EventSource) {
-                trySend(adapter.finish())
-                close()
+                resumeOnce(GeminiStreamAttemptOutcome.Success)
             }
         }
         val eventSource = EventSources.createFactory(client).newEventSource(request, listener)
-        awaitClose { eventSource.cancel() }
-        // trySend silently drops a delta when the buffer is full, dropping characters mid-reply
-        // (#1295), so the buffer must be unbounded - same as the other providers' streamText.
-    }.buffer(Channel.UNLIMITED)
+        cont.invokeOnCancellation { eventSource.cancel() }
+    }
 
     override suspend fun generateImage(
         providerSetting: ProviderSetting,
@@ -210,6 +291,16 @@ class GeminiProvider(
 }
 
 private const val TAG = "GeminiProvider"
+
+/** How one [GeminiProvider.streamText] attempt against a single endpoint ended. */
+private sealed interface GeminiStreamAttemptOutcome {
+    data object Success : GeminiStreamAttemptOutcome
+    data class Failure(
+        val cause: Throwable,
+        val emitted: Boolean,
+        val classification: GeminiErrorClassification,
+    ) : GeminiStreamAttemptOutcome
+}
 
 /**
  * Adapts [GoogleProvider.parseStreamCandidates]'s legacy [MessageChunk] shape (see that
@@ -359,7 +450,9 @@ private fun mapAvailableModels(body: String, json: Json): List<Model> {
             },
             abilities = buildList {
                 add(ModelAbility.TOOL)
-                if (item["supportsThinking"]?.jsonPrimitive?.booleanOrNull == true) {
+                if (item["supportsThinking"]?.jsonPrimitive?.booleanOrNull == true &&
+                    !isGptOssModelId(modelId)
+                ) {
                     add(ModelAbility.REASONING)
                 }
             },
@@ -446,6 +539,28 @@ private fun resolveStreamFailureCause(
         Logging.log(TAG, "onFailure: failed to read error body, detail lost: ${e.javaClass.simpleName}: ${e.message}")
         t ?: e
     }
+}
+
+/**
+ * Code Assist rejects any `thinkingConfig` for GPT-OSS with `INVALID_ARGUMENT` (verified on
+ * device 2026-09-24); the model still reasons internally. Matched case-insensitively since
+ * Code Assist ids aren't guaranteed to be lowercase. Shared by [mapAvailableModels] (which keeps
+ * newly imported GPT-OSS models off [ModelAbility.REASONING]) and [stripThinkingConfigForGptOss]
+ * (which covers models already imported with reasoning ticked before this filter existed).
+ */
+internal fun isGptOssModelId(modelId: String): Boolean =
+    modelId.contains("gpt-oss", ignoreCase = true)
+
+/**
+ * Strips `generationConfig.thinkingConfig` for GPT-OSS models (see [isGptOssModelId]) before
+ * [raiseThinkingBudgetToClaudeFloor] and [raiseMaxTokensAboveThinkingBudget] run, so those
+ * Claude-only raisers see no thinking config and are no-ops here.
+ */
+private fun stripThinkingConfigForGptOss(modelId: String, request: JsonObject): JsonObject {
+    if (!isGptOssModelId(modelId)) return request
+    val config = request["generationConfig"] as? JsonObject ?: return request
+    if ("thinkingConfig" !in config) return request
+    return JsonObject(request + ("generationConfig" to JsonObject(config - "thinkingConfig")))
 }
 
 /**

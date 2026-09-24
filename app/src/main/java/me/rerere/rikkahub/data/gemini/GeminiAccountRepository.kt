@@ -1,6 +1,5 @@
 package me.rerere.rikkahub.data.gemini
 
-import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -11,12 +10,14 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -187,23 +188,20 @@ class GeminiAccountRepository internal constructor(
      * model list rather than on an endpoint of its own.
      */
     private suspend fun fetchUsageLocked(account: GeminiAccount): GeminiAccount {
-        val response = withContext(Dispatchers.IO) {
-            client.newCall(
-                Request.Builder()
-                    .url("$CODE_ASSIST_ENDPOINT/v1internal:fetchAvailableModels")
-                    .antigravityHeaders(account.accessToken)
-                    .post("{}".toRequestBody(JSON_MEDIA_TYPE))
-                    .build()
-            ).await()
+        val outcome = client.postWithEndpointFallback(GEMINI_GENERATE_ENDPOINTS, json) { endpoint ->
+            Request.Builder()
+                .url("$endpoint/v1internal:fetchAvailableModels")
+                .antigravityHeaders(account.accessToken)
+                .post("{}".toRequestBody(JSON_MEDIA_TYPE))
+                .build()
         }
-        val body = response.body.string()
-        if (!response.isSuccessful) {
-            if (response.code == 401) {
+        if (!outcome.successful) {
+            if (outcome.code == 401) {
                 replaceAccount(account.id) { it.copy(tokenStatus = GeminiTokenStatus.INVALID) }
             }
-            error("Failed to fetch Gemini usage: ${response.code} $body")
+            error("Failed to fetch Gemini usage: ${outcome.code} ${outcome.body}")
         }
-        val snapshot = parseGeminiQuotaUsage(json.parseToJsonElement(body).jsonObject)
+        val snapshot = parseGeminiQuotaUsage(json.parseToJsonElement(outcome.body).jsonObject)
         if (snapshot == null) {
             // Keeping the previous snapshot beats blanking the card, but the user is then looking
             // at a stale reading, so say why rather than failing silently.
@@ -343,20 +341,25 @@ private data class GeminiIdentity(
 
 /**
  * The Cloud Code Assist backend gates model routing and quota on the client it believes it is
- * talking to, so every call identifies itself as `antigravity/hub/<version> <os>/<arch>`. Unlike
- * the Gemini CLI, Antigravity sends no `Client-Metadata` header: the same information travels in
- * the request body instead. The arch names follow Go's conventions, so an x86_64 device reports
- * `amd64`.
+ * talking to. The real `antigravity/hub` client's header is
+ * `antigravity/hub/<version> (aidev_client; os_type=<os>; arch=<arch>; cl=<changelist>)`, with
+ * `os_type`/`arch` pinned to the darwin/arm64 reference client the backend's model gating was
+ * captured from - independent of the host platform - because the backend gates on the version,
+ * not the platform (oh-my-pi packages/catalog/src/wire/gemini-headers.ts:26-33). Unlike the Gemini
+ * CLI, Antigravity sends no `Client-Metadata` header: the same information travels in the request
+ * body instead.
  */
-internal fun Request.Builder.antigravityHeaders(accessToken: String): Request.Builder {
-    val arch = when (Build.SUPPORTED_ABIS.firstOrNull()) {
-        "x86_64" -> "amd64"
-        "x86" -> "386"
-        else -> "arm64"
-    }
-    return header("Authorization", "Bearer $accessToken")
-        .header("User-Agent", "antigravity/hub/$ANTIGRAVITY_VERSION android/$arch")
-}
+internal fun Request.Builder.antigravityHeaders(accessToken: String): Request.Builder =
+    header("Authorization", "Bearer $accessToken")
+        .header("User-Agent", buildAntigravityUserAgent())
+
+/** Builds the pinned Antigravity `User-Agent` header value; see [antigravityHeaders]. */
+internal fun buildAntigravityUserAgent(
+    version: String = ANTIGRAVITY_VERSION,
+    os: String = ANTIGRAVITY_OS,
+    arch: String = ANTIGRAVITY_ARCH,
+    cl: String = ANTIGRAVITY_CL,
+): String = "antigravity/hub/$version (aidev_client; os_type=$os; arch=$arch; cl=$cl)"
 
 internal fun clientMetadataJson(): JsonObject = buildJsonObject {
     put("ideType", "ANTIGRAVITY")
@@ -364,7 +367,30 @@ internal fun clientMetadataJson(): JsonObject = buildJsonObject {
     put("pluginType", "GEMINI")
 }
 
-internal const val ANTIGRAVITY_VERSION = "2.1.4"
+// oh-my-pi's DEFAULT_ANTIGRAVITY_VERSION, the pinned fallback it uses when it isn't reading the
+// live Antigravity update manifest (packages/catalog/src/wire/gemini-headers.ts:35). The backend
+// gates newer models on this version, so bump it there and here together when it moves; we do not
+// fetch the manifest ourselves to avoid a runtime dependency on an extra Google-owned endpoint.
+internal const val ANTIGRAVITY_VERSION = "2.8.0"
+internal const val ANTIGRAVITY_OS = "darwin"
+internal const val ANTIGRAVITY_ARCH = "arm64"
+// The backend does not validate cl: stale, zero, and absent values all pass model gating
+// (gemini-headers.ts:95-98), so this stays at opencode-antigravity-auth's captured value
+// (src/constants.ts's getAntigravityUserAgent default) rather than tracking a real changelist.
+internal const val ANTIGRAVITY_CL = "963137146"
+
+// Antigravity generate traffic (streamGenerateContent, fetchAvailableModels) tries the daily
+// Cloud Code Assist tier first, then its sandbox twin - oh-my-pi's ANTIGRAVITY_ENDPOINT_FALLBACKS
+// (packages/ai/src/providers/google-gemini-cli.ts:314-316) - falling back to prod as a last
+// resort so a signed-in account still works if both daily tiers are unreachable. loadCodeAssist
+// and onboardUser (project discovery, sign-in) stay on prod only: sign-in already works there.
+internal const val ANTIGRAVITY_DAILY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com"
+internal const val ANTIGRAVITY_DAILY_SANDBOX_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com"
+internal val GEMINI_GENERATE_ENDPOINTS = listOf(
+    ANTIGRAVITY_DAILY_ENDPOINT,
+    ANTIGRAVITY_DAILY_SANDBOX_ENDPOINT,
+    GeminiAccountRepository.CODE_ASSIST_ENDPOINT,
+)
 
 internal fun isGeminiRefreshAuthenticationFailure(
     statusCode: Int,
@@ -497,4 +523,145 @@ internal fun selectGeminiAccountIndex(
         if (accounts[index].isAvailable()) return index
     }
     return null
+}
+
+// oh-my-pi's MAX_RETRIES / BASE_DELAY_MS (google-gemini-cli.ts:319-320): the last endpoint in the
+// fallback chain gets this many extra attempts, backing off exponentially from this base.
+internal const val GEMINI_MAX_RETRIES = 3
+internal const val GEMINI_RETRY_BASE_DELAY_MS = 1_000L
+
+// oh-my-pi's RATE_LIMIT_BUDGET_MS (google-gemini-cli.ts:322) and LONG_RATE_LIMIT_DELAY_MS
+// (error/rate-limit.ts) name the same five-minute figure for two different purposes that both
+// apply here: the longest delay worth actually waiting out, and the delay past which a
+// RATE_LIMIT_EXCEEDED reason is really a long quota window rather than a short throttle.
+internal const val GEMINI_RETRY_DELAY_CAP_MS = 5 * 60 * 1000L
+
+private const val GOOGLE_RPC_ERROR_INFO_TYPE = "type.googleapis.com/google.rpc.ErrorInfo"
+private const val GOOGLE_RPC_RETRY_INFO_TYPE = "type.googleapis.com/google.rpc.RetryInfo"
+private val RETRY_DELAY_VALUE_PATTERN = Regex("""^([0-9.]+)(ms|s)$""")
+
+// oh-my-pi's ANTIGRAVITY_MODEL_QUOTA_PATTERN (error/rate-limit.ts:114): Cloud Code Assist reuses
+// the RATE_LIMIT_EXCEEDED reason for a per-model daily quota - distinguishable only by this phrase
+// in error.message - so that case is promoted to QUOTA_EXHAUSTED the same way rate-limit.ts:162
+// promotes it, regardless of any retry delay.
+private val ANTIGRAVITY_MODEL_QUOTA_PATTERN = Regex("""\bexhausted your capacity on this model\b""", RegexOption.IGNORE_CASE)
+
+/**
+ * How a Cloud Code Assist error response should steer the caller's retry loop.
+ *
+ * [reason] is a `google.rpc.ErrorInfo.reason` read out of `error.details[]` when `error.status`
+ * is `RESOURCE_EXHAUSTED` (oh-my-pi's `parseGoogleRpcRateLimitReason`,
+ * packages/ai/src/error/rate-limit.ts:140-176), or the bare `error.status` otherwise. [retryDelayMs]
+ * is a `google.rpc.RetryInfo.retryDelay` value such as `"12s"` (`extractRetryHint`,
+ * packages/utils/src/fetch-retry.ts:8, 71). [retryable] mirrors that file's `fetchWithRetry`
+ * (lines 375-382) plus `isTransientStatus` (error/retryable.ts:20-22): only a transient HTTP
+ * status (408/429/5xx) is retryable at all, and even then a `QUOTA_EXHAUSTED` reason - or a
+ * `RATE_LIMIT_EXCEEDED` one whose own retry delay is at or beyond [GEMINI_RETRY_DELAY_CAP_MS], or
+ * whose message names a per-model quota ([ANTIGRAVITY_MODEL_QUOTA_PATTERN]) - is treated as a long
+ * quota window, not a transient throttle, the same way rate-limit.ts:162,170-172 promotes it.
+ */
+internal data class GeminiErrorClassification(
+    val status: Int?,
+    val reason: String?,
+    val retryDelayMs: Long?,
+    val retryable: Boolean,
+)
+
+/**
+ * Classifies a Cloud Code Assist error response for the retry loop. [statusCode] is the real HTTP
+ * status when there is one and always wins; when it is null (an error delivered inside a 200 SSE
+ * event body rather than as an HTTP failure) this falls back to the body's own numeric `error.code`
+ * - the same field oh-my-pi's stream loop reads to classify an embedded error
+ * (google-gemini-cli.ts:766-771: `chunk.error.code` feeds `GeminiCliApiError`'s status). A missing
+ * or unparseable [body] degrades to classifying off whatever status is available, never throws.
+ */
+internal fun classifyGeminiError(statusCode: Int?, body: String?, json: Json): GeminiErrorClassification {
+    val error = runCatching {
+        body?.let { json.parseToJsonElement(it).jsonObject["error"]?.jsonObject }
+    }.getOrNull()
+    val effectiveStatus = statusCode ?: error?.get("code")?.jsonPrimitive?.intOrNull
+    val transientStatus = effectiveStatus == 408 || effectiveStatus == 429 ||
+        (effectiveStatus != null && effectiveStatus >= 500)
+    val rpcStatus = error?.get("status")?.jsonPrimitive?.contentOrNull
+    val details = (error?.get("details") as? JsonArray)?.mapNotNull { it as? JsonObject }.orEmpty()
+    var reason = if (rpcStatus?.uppercase() == "RESOURCE_EXHAUSTED") {
+        details.firstOrNull { it["@type"]?.jsonPrimitive?.contentOrNull == GOOGLE_RPC_ERROR_INFO_TYPE }
+            ?.get("reason")?.jsonPrimitive?.contentOrNull
+    } else {
+        null
+    }
+    val message = error?.get("message")?.jsonPrimitive?.contentOrNull
+    if (reason == "RATE_LIMIT_EXCEEDED" && message != null &&
+        ANTIGRAVITY_MODEL_QUOTA_PATTERN.containsMatchIn(message)
+    ) {
+        reason = "QUOTA_EXHAUSTED"
+    }
+    val retryDelayMs = details
+        .firstOrNull { it["@type"]?.jsonPrimitive?.contentOrNull == GOOGLE_RPC_RETRY_INFO_TYPE }
+        ?.get("retryDelay")?.jsonPrimitive?.contentOrNull
+        ?.let(::parseGeminiRetryDelayMs)
+    val quotaExhausted = reason == "QUOTA_EXHAUSTED" ||
+        (reason == "RATE_LIMIT_EXCEEDED" && retryDelayMs != null && retryDelayMs >= GEMINI_RETRY_DELAY_CAP_MS)
+    val withinRetryBudget = retryDelayMs == null || retryDelayMs <= GEMINI_RETRY_DELAY_CAP_MS
+    return GeminiErrorClassification(
+        status = effectiveStatus,
+        reason = reason ?: rpcStatus,
+        retryDelayMs = retryDelayMs,
+        retryable = transientStatus && !quotaExhausted && withinRetryBudget,
+    )
+}
+
+/** Parses a `google.rpc.RetryInfo.retryDelay` value such as `"12s"` or `"500ms"` into milliseconds. */
+internal fun parseGeminiRetryDelayMs(raw: String): Long? {
+    val match = RETRY_DELAY_VALUE_PATTERN.find(raw.trim()) ?: return null
+    val (numberPart, unit) = match.destructured
+    val amount = numberPart.toDoubleOrNull() ?: return null
+    return (if (unit == "ms") amount else amount * 1000.0).toLong()
+}
+
+/** The delay before the next retry attempt: the server's own hint if it gave one, else exponential backoff. */
+internal fun resolveGeminiRetryDelayMs(classification: GeminiErrorClassification, attempt: Int): Long {
+    val backoff = GEMINI_RETRY_BASE_DELAY_MS * (1L shl attempt)
+    return (classification.retryDelayMs ?: backoff).coerceAtMost(GEMINI_RETRY_DELAY_CAP_MS)
+}
+
+/** The outcome of one Cloud Code Assist HTTP call, with the body always already drained to text. */
+internal data class GeminiHttpOutcome(val code: Int, val body: String) {
+    val successful: Boolean get() = code in 200..299
+}
+
+/**
+ * Issues a Cloud Code Assist POST across [endpoints] in order, mirroring oh-my-pi's Antigravity
+ * fallback rule (google-gemini-cli.ts:928-976's per-endpoint `fetchWithRetry` call): every
+ * endpoint but the last gets exactly one attempt, and a transient failure (408/429/5xx) moves on
+ * to the next endpoint immediately with no delay; the last endpoint gets [GEMINI_MAX_RETRIES]
+ * extra attempts with backoff, honoring a `google.rpc.RetryInfo` delay when [classifyGeminiError]
+ * finds one, capped at [GEMINI_RETRY_DELAY_CAP_MS]. A non-transient status, or one
+ * [classifyGeminiError] rules out as a long quota window, stops the whole chain immediately rather
+ * than trying the remaining endpoints.
+ */
+internal suspend fun OkHttpClient.postWithEndpointFallback(
+    endpoints: List<String>,
+    json: Json,
+    buildRequest: (endpoint: String) -> Request,
+): GeminiHttpOutcome {
+    var last: GeminiHttpOutcome? = null
+    for (index in endpoints.indices) {
+        val endpoint = endpoints[index]
+        val isLastEndpoint = index == endpoints.lastIndex
+        val maxAttempts = if (isLastEndpoint) GEMINI_MAX_RETRIES + 1 else 1
+        for (attempt in 0 until maxAttempts) {
+            val response = withContext(Dispatchers.IO) { newCall(buildRequest(endpoint)).await() }
+            val outcome = GeminiHttpOutcome(response.code, response.body.string())
+            last = outcome
+            if (outcome.successful) return outcome
+            val classification = classifyGeminiError(outcome.code, outcome.body, json)
+            if (!classification.retryable) return outcome
+            if (attempt < maxAttempts - 1) {
+                delay(resolveGeminiRetryDelayMs(classification, attempt))
+            }
+            // Otherwise this endpoint is exhausted; fall through to the next one.
+        }
+    }
+    return last ?: error("No Cloud Code Assist endpoint was attempted")
 }

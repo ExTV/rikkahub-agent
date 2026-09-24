@@ -107,4 +107,25 @@ class GeminiProviderAvailableModelsTest {
         val model = mapModels(body).single()
         assertEquals("my-model-id", model.displayName)
     }
+
+    @Test
+    fun `supportsThinking true on a GPT-OSS model does not add REASONING`() {
+        val body = """{"models": {"gemini-gpt-oss-120b": {"displayName": "GPT-OSS 120B", "supportsThinking": true}}}"""
+        val model = mapModels(body).single()
+        assertEquals(listOf(ModelAbility.TOOL), model.abilities)
+    }
+
+    @Test
+    fun `GPT-OSS matching in the ability mapping is case-insensitive`() {
+        val body = """{"models": {"GPT-OSS-20B": {"displayName": "GPT-OSS 20B", "supportsThinking": true}}}"""
+        val model = mapModels(body).single()
+        assertEquals(listOf(ModelAbility.TOOL), model.abilities)
+    }
+
+    @Test
+    fun `a non GPT-OSS model with supportsThinking true still gets REASONING`() {
+        val body = """{"models": {"gemini-claude-opus-4-6-thinking": {"displayName": "Claude Opus 4.6 Thinking", "supportsThinking": true}}}"""
+        val model = mapModels(body).single()
+        assertEquals(listOf(ModelAbility.TOOL, ModelAbility.REASONING), model.abilities)
+    }
 }
