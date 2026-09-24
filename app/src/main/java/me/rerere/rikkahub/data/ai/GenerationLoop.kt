@@ -439,11 +439,19 @@ internal object LoopGuard {
  * [canResumeToolExecution] itself - Auto stays false there ([ToolApprovalStateTest] and the
  * top-of-loop Pending-detection both rely on that); the inclusion happens only at this resume
  * call site.
+ *
+ * An Auto tool with [UIMessagePart.Tool.executionStartedAt] set is excluded from the "never
+ * got to run" clause even though it isn't executed: that shape means a previous attempt was
+ * interrupted mid-execute (see [UIMessagePart.Tool.isInterruptedAttempt]), not that it's
+ * still waiting its turn. In production the top-of-generateText replay-safety pass already
+ * flips that tool to Denied before this function runs, but this pure function must not rely
+ * on that ordering to avoid re-running it.
  */
 internal fun resumableToolsIncludingUnexecutedAuto(
     tools: List<UIMessagePart.Tool>,
 ): List<UIMessagePart.Tool> = tools.filter { tool ->
-    tool.canResumeExecution || (tool.approvalState is ToolApprovalState.Auto && !tool.isExecuted)
+    tool.canResumeExecution ||
+        (tool.approvalState is ToolApprovalState.Auto && !tool.isExecuted && tool.executionStartedAt == null)
 }
 
 class GenerationLoop(

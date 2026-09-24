@@ -28,4 +28,30 @@ class ToolApprovalStateTest {
         assertFalse(ToolApprovalState.Auto.canResumeToolExecution())
         assertFalse(ToolApprovalState.Pending.canResumeToolExecution())
     }
+
+    @Test
+    fun `an Auto tool that started executing but produced no output is an interrupted attempt`() {
+        // Auto tools take the identical mark-then-execute path as Approved tools in
+        // GenerationLoop (executionStartedAt is set before toolDef.execute runs). A process
+        // kill mid-execute must be detectable the same way for both, not just Approved.
+        val interruptedAuto = UIMessagePart.Tool(
+            toolCallId = "call",
+            toolName = "write_file",
+            input = "{}",
+            approvalState = ToolApprovalState.Auto,
+            executionStartedAt = 1_000L,
+        )
+        assertTrue(interruptedAuto.isInterruptedAttempt)
+    }
+
+    @Test
+    fun `an Auto tool that never started executing is not an interrupted attempt`() {
+        val freshAuto = UIMessagePart.Tool(
+            toolCallId = "call",
+            toolName = "write_file",
+            input = "{}",
+            approvalState = ToolApprovalState.Auto,
+        )
+        assertFalse(freshAuto.isInterruptedAttempt)
+    }
 }
