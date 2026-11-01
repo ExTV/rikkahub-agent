@@ -1,0 +1,43 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+.cursor
+.history
+.kotlin
+
+# --- Personal / AI-agent workspace (not for the public fork) ---
+.claude/
+/docs/superpowers/
+**/CLAUDE.md
+**/AGENTS.md
+
+# Sibling clones of upstream projects used as references during development
+/termux-api/
+
+# Sensitive build inputs (signed-in service account / Firebase config)
+app/google-services.json
+# Release artifacts staged for GitHub release uploads — debug-signed APKs are
+# regenerated each release; no need to track them in git.
+/release-artifacts/
+
+# Release signing keystore — never commit
+/rikkahub-release.jks
+
+# Local planning doc — not for the remote
+/enhance.md
+
+# Separate companion repo - cloned locally, not part of this repo
+/agent-keyboard/
+
+# Generated baseline profiles (baseline profiling dropped in this fork)
+/app/src/release/generated/
+
+# bun.lock is generated from the tracked pnpm-lock.yaml on clean checkouts
+/web-ui/bun.lock

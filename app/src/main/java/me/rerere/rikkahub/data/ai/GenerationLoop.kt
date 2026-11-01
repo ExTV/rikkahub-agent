@@ -1,0 +1,1456 @@
+package me.rerere.rikkahub.data.ai
+
+import android.content.Context
+import android.content.Intent
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import android.widget.Toast
+import me.rerere.rikkahub.BuildConfig
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.retryWhen
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import me.rerere.rikkahub.service.AgentOverlay
+import me.rerere.rikkahub.service.RikkaAccessibilityService
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toInstant
+import kotlinx.datetime.toLocalDateTime
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import me.rerere.ai.core.MessageRole
+import me.rerere.ai.core.Tool
+import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.Provider
+import me.rerere.ai.provider.ProviderManager
+import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.provider.TextGenerationParams
+import me.rerere.ai.provider.providers.openai.ResponseStreamErrorException
+import me.rerere.ai.registry.ModelRegistry
+import me.rerere.ai.ui.UIMessage
+import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.ui.ToolApprovalState
+import me.rerere.ai.ui.StreamChunk
+import me.rerere.ai.ui.StreamChunkHandler
+import me.rerere.ai.ui.handleTextGenerationResult
+import me.rerere.ai.ui.limitContext
+import me.rerere.ai.util.HttpException
+import me.rerere.ai.util.redactSecrets
+import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer
+import me.rerere.rikkahub.data.ai.transformers.MessageTransformer
+import me.rerere.rikkahub.data.ai.transformers.OutputMessageTransformer
+import me.rerere.rikkahub.data.files.FileFolders
+import me.rerere.rikkahub.data.ai.transformers.onGenerationFinish
+import me.rerere.rikkahub.data.ai.transformers.transforms
+import me.rerere.rikkahub.data.ai.transformers.visualTransforms
+import me.rerere.rikkahub.data.ai.limits.ToolRuntimeLimits
+import me.rerere.rikkahub.data.ai.tools.buildMemoryTools
+import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.datastore.findProvider
+import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.data.model.AssistantMemory
+import me.rerere.rikkahub.data.repository.MemoryRepository
+import java.io.File
+import java.io.IOException
+import kotlin.time.Clock
+import kotlin.uuid.Uuid
+
+private const val TAG = "GenerationHandler"
+private const val MAX_TOOL_OUTPUT_CHARS = 32 * 1024
+private const val TOOL_OUTPUT_PREVIEW_CHARS = 4 * 1024
+private const val GENERATION_STREAM_RETRY_INITIAL_DELAY_MS = 750L
+private const val GENERATION_STREAM_RETRY_MAX_DELAY_MS = 4_000L
+
+private val USER_CANCELLATION_MARKERS = listOf(
+    "canceled by user",
+    "cancelled by user",
+    "user_canceled",
+    "user_cancelled",
+)
+
+// A deterministic 4xx will not succeed on retry, so retrying it just burns quota and delay for
+// an outcome that was never going to change. These four are the exceptions: they signal a
+// transient condition (timeout, conflict, precondition, rate limit) rather than a request that
+// is permanently invalid.
+private val RETRYABLE_4XX_STATUS_CODES = setOf(408, 409, 425, 429)
+
+private fun isCancellationFailure(failure: Throwable): Boolean =
+    generateSequence(failure) { it.cause }
+        .take(8)
+        .any { cause ->
+            cause is CancellationException ||
+                USER_CANCELLATION_MARKERS.any { marker ->
+                    cause.message?.contains(marker, ignoreCase = true) == true
+                }
+        }
+
+/**
+ * A clean stream close only signals a transport failure worth retrying when NOTHING was ever
+ * received. If at least one chunk arrived but none of them yielded parseable parts (e.g. every
+ * part shape was unrecognized), that is a permanent condition - retrying the whole generation
+ * cannot help, so the caller should log it and let the generation end normally instead of
+ * synthesizing a retryable failure.
+ */
+internal fun shouldReportEmptyGenerationStream(receivedAnyChunk: Boolean): Boolean =
+    !receivedAnyChunk
+
+internal fun shouldRetryGenerationStreamFailure(
+    failure: Throwable,
+    retryAttempt: Long,
+    maxRetries: Int,
+    receivedMeaningfulOutput: Boolean,
+): Boolean {
+    if (receivedMeaningfulOutput || retryAttempt >= maxRetries.coerceAtLeast(0).toLong()) {
+        return false
+    }
+    if (failure is ResponseStreamErrorException || isContextLimitFailure(failure)) {
+        return false
+    }
+    if (isNonRetryableClientError(failure)) {
+        return false
+    }
+    if (isQuotaExhaustedFailure(failure)) {
+        return false
+    }
+    // Retry provider, parsing, and local processing failures alike. Cancellation is kept
+    // out of the retry loop so stop-generation and parent-scope cancellation propagate.
+    return !isCancellationFailure(failure)
+}
+
+// A 4xx other than the RETRYABLE_4XX_STATUS_CODES exceptions is deterministic: the same
+// request will fail the same way on every retry. 5xx and failures with no known status code
+// (most providers don't attach one) keep the existing retry behaviour.
+private fun isNonRetryableClientError(failure: Throwable): Boolean {
+    val statusCode = generateSequence(failure) { it.cause }
+        .take(8)
+        .filterIsInstance<HttpException>()
+        .firstOrNull()
+        ?.statusCode
+        ?: return false
+    return statusCode in 400..499 && statusCode !in RETRYABLE_4XX_STATUS_CODES
+}
+
+// 429 is normally in RETRYABLE_4XX_STATUS_CODES because it usually signals ordinary rate
+// limiting, which is worth retrying. But a 429 that also carries a RESOURCE_EXHAUSTED marker
+// means the account is quota-blocked server-side (CCA returns this instantly): the same
+// request will fail the same way on every retry, so retrying just burns time and requests.
+private val QUOTA_EXHAUSTED_MARKERS = listOf(
+    "resource exhausted",
+    "resource has been exhausted",
+)
+
+private fun isQuotaExhaustedFailure(failure: Throwable): Boolean {
+    val statusCode = generateSequence(failure) { it.cause }
+        .take(8)
+        .filterIsInstance<HttpException>()
+        .firstOrNull()
+        ?.statusCode
+    if (statusCode != 429) {
+        return false
+    }
+    return generateSequence(failure) { it.cause }
+        .take(8)
+        .any { cause ->
+            val text = (cause.message.orEmpty() + " " + cause.toString())
+                .lowercase()
+                .replace('_', ' ')
+            QUOTA_EXHAUSTED_MARKERS.any { marker -> marker in text }
+        }
+}
+
+private fun isContextLimitFailure(failure: Throwable): Boolean =
+    generateSequence(failure) { it.cause }
+        .take(8)
+        .any { cause ->
+            val text = (cause.message.orEmpty() + " " + cause.toString())
+                .lowercase()
+                .replace('_', ' ')
+            "context length exceeded" in text ||
+                "maximum context length" in text ||
+                "maximum context window" in text
+        }
+
+private fun generationStreamRetryDelayMs(retryAttempt: Long): Long =
+    ((retryAttempt + 1) * GENERATION_STREAM_RETRY_INITIAL_DELAY_MS)
+        .coerceAtMost(GENERATION_STREAM_RETRY_MAX_DELAY_MS)
+
+private fun retryFailureReason(failure: Throwable): String =
+    generateSequence(failure) { it.cause }
+        .mapNotNull { it.message?.trim()?.takeIf(String::isNotBlank) }
+        .firstOrNull()
+        ?.replace(Regex("\\s+"), " ")
+        ?.take(240)
+        ?: failure.javaClass.simpleName
+
+private fun retryStatusText(
+    context: Context,
+    retryNumber: Long,
+    maxRetries: Int,
+    failure: Throwable,
+): String = context.getString(
+    me.rerere.rikkahub.R.string.chat_page_retrying,
+    retryNumber,
+    maxRetries,
+    retryFailureReason(failure),
+)
+
+private fun clearRetryStatus(processingStatus: MutableStateFlow<String?>) {
+    processingStatus.value = null
+}
+
+// Marks the retry loop's "meaningful output already arrived" flag. Only chunks that carry
+// actual model output (text/reasoning/tool/image content, or annotations) count - the bare
+// Start/End markers and Usage/Finish bookkeeping chunks don't, mirroring the old
+// choice.delta/message.parts.isNotEmpty() check against the pre-refactor chunk shape.
+private fun isMeaningfulStreamChunk(chunk: StreamChunk): Boolean = when (chunk) {
+    is StreamChunk.TextDelta,
+    is StreamChunk.ReasoningDelta,
+    is StreamChunk.ToolCallDelta,
+    is StreamChunk.ImageDelta,
+    is StreamChunk.ImageSnapshot,
+    is StreamChunk.ServerToolStart,
+    is StreamChunk.ServerToolInputDelta,
+    is StreamChunk.ServerToolEnd,
+    is StreamChunk.Annotations -> true
+    else -> false
+}
+
+private suspend fun <T> retryGenerationTransportRequest(
+    maxRetries: Int,
+    onRetry: (retryNumber: Long, failure: Throwable) -> Unit = { _, _ -> },
+    request: suspend () -> T,
+): T {
+    var retryAttempt = 0L
+    while (true) {
+        try {
+            return request()
+        } catch (failure: Throwable) {
+            if (!shouldRetryGenerationStreamFailure(
+                    failure = failure,
+                    retryAttempt = retryAttempt,
+                    maxRetries = maxRetries,
+                    receivedMeaningfulOutput = false,
+                )) {
+                throw failure
+            }
+            val delayMs = generationStreamRetryDelayMs(retryAttempt)
+            Log.w(
+                TAG,
+                "generateText: retrying after failure " +
+                    "(${retryAttempt + 1}/$maxRetries) in ${delayMs}ms",
+                failure,
+            )
+            onRetry(retryAttempt + 1, failure)
+            delay(delayMs)
+            retryAttempt++
+        }
+    }
+}
+
+/**
+ * Replace older tool-result `Image` parts with a small text elision so the same JPEGs
+ * aren't re-encoded into base64 on every subsequent step. We keep the
+ * [IMAGE_KEEP_LAST_N_TOOL_RESULTS] most-recent tool-result-bearing assistant messages
+ * verbatim and elide everything older. User uploads (`role=USER`) are NEVER elided —
+ * those are real input the model needs to reason over. Assistant-generated images
+ * (model image-gen output) are also kept verbatim as those are visible product, not
+ * intermediate reasoning state.
+ */
+private fun List<UIMessage>.ageOldToolImages(): List<UIMessage> {
+    var toolResultsWithImagesSeen = 0
+    return this.asReversed().map { msg ->
+        if (msg.role == MessageRole.USER) return@map msg
+        val hasImageInTool = msg.parts.any { p ->
+            p is UIMessagePart.Tool && p.output.any { it is UIMessagePart.Image }
+        }
+        if (!hasImageInTool) return@map msg
+        toolResultsWithImagesSeen++
+        if (toolResultsWithImagesSeen <= IMAGE_KEEP_LAST_N_TOOL_RESULTS) return@map msg
+        val newParts = msg.parts.map { part ->
+            if (part is UIMessagePart.Tool) {
+                val newOutput = part.output.map { o ->
+                    if (o is UIMessagePart.Image) {
+                        UIMessagePart.Text(
+                            "[image elided — original at ${o.url}; superseded by newer screenshots]"
+                        )
+                    } else o
+                }
+                part.copy(output = newOutput)
+            } else part
+        }
+        msg.copy(parts = newParts)
+    }.asReversed()
+}
+
+@Serializable
+sealed interface GenerationChunk {
+    data class Messages(
+        val messages: List<UIMessage>
+    ) : GenerationChunk
+}
+
+private const val TAG_GH_LOOP = "GenHandlerLoop"
+
+/**
+ * If the model calls the same tool with the same exact JSON args this many times within a
+ * single user turn, we refuse the next execution and inject a "loop_detected" envelope. The
+ * threshold is INCLUSIVE of the prior occurrences, so a value of 3 means: first call runs,
+ * second call runs, third call runs — fourth identical call is blocked. Picked low enough
+ * that runaway loops can't drain the user's API tokens but high enough to allow legitimate
+ * retries (a notification key going stale between read and dismiss, etc.).
+ */
+private const val LOOP_GUARD_REPEAT_THRESHOLD = 3
+
+// The per-turn wall-clock budget was hardcoded here (most recently 10 min). It now lives in
+// ToolRuntimeLimits.turnBudgetMs (default 10 min), user-configurable via Settings -> Termux;
+// every read site below uses that holder directly.
+
+/**
+ * Max number of times the loop guard can trip in a single turn before we force-end the
+ * turn entirely. Prevents the "model keeps trying different tools, each gets loop-detected"
+ * pattern that produced the 27-step / 141K-token disaster: one trip means the model is
+ * confused; six trips means it's not coming back.
+ */
+private const val MAX_LOOP_GUARD_TRIPS_PER_TURN = 6
+
+/**
+ * Number of most-recent tool-result-bearing messages whose `Image` parts are kept
+ * verbatim in the prompt. Older tool-result images are replaced with a small text
+ * elision so the same JPEG isn't re-encoded into base64 on every step. Without this
+ * a screen-automation turn that takes 5 screenshots makes the provider re-pay
+ * ~1–2MB × 5 base64 encode + upload on every subsequent step.
+ *
+ * 2 is the smallest value that lets the model do "look at this screenshot, decide
+ * action; take new screenshot, compare" — needs both the previous and the current
+ * screenshot in context. Anything older has been superseded.
+ */
+private const val IMAGE_KEEP_LAST_N_TOOL_RESULTS = 2
+
+/**
+ * Some read-only tools measure a real-time signal where re-calling after a TTL is
+ * legitimate (battery drains, screens change, sensors update). For these, the loop guard
+ * lets identical calls through if the most recent identical call is older than the TTL.
+ * Without this, asking the model "what's the battery now?" after a previous reading just
+ * regurgitates the stale value and the user has no idea.
+ *
+ * Tools NOT in this map are treated as side-effecting / idempotent-input: re-calling with
+ * identical args is a loop, not a refresh. Add new freshness-sensitive tools here.
+ */
+private val FRESHNESS_TTL_MS_BY_TOOL: Map<String, Long> = mapOf(
+    "get_battery_status" to 30_000L,
+    "get_audio_info" to 30_000L,
+    "get_telephony_info" to 30_000L,
+    "get_wifi_info" to 30_000L,
+    "get_storage_info" to 60_000L,
+    "get_brightness" to 10_000L,
+    "get_volume" to 10_000L,
+    "get_location" to 30_000L,
+    "get_time_info" to 5_000L,
+    "read_sensor" to 5_000L,
+    "take_screenshot" to 5_000L,
+    "read_window_tree" to 5_000L,
+    "list_active_notifications" to 5_000L,
+    "list_jobs" to 60_000L,
+)
+
+/**
+ * UI-observation tools that read screen/device state without changing it. Used by the loop
+ * guard's reset rule below: when the model drives a UI it runs an act-observe cycle and
+ * naturally repeats the same observation call (read_window_tree / take_screenshot with
+ * identical args) after every action. Those repeats are progress, NOT a loop, so an
+ * intervening ACTION (any executed tool NOT in this set) resets the observation repeat count.
+ * Tools that ARE in this set do not reset each other, so a model that merely alternates
+ * observers on a frozen screen still trips the guard (the token-drain case we must catch).
+ *
+ * This is the freshness-sensitive realtime readers plus find_node (the other pure screen
+ * reader). Keep it to genuine read-only observers: wrongly adding an ACTION tool here would
+ * stop it from resetting the counter and reintroduce the false-positive loop_detected.
+ */
+private val READ_ONLY_OBSERVATION_TOOLS: Set<String> =
+    FRESHNESS_TTL_MS_BY_TOOL.keys + "find_node"
+
+/** One prior executed tool call in the current turn, in chronological order. */
+internal data class PriorToolCall(
+    val toolName: String,
+    val signature: String,
+    val epochMs: Long,
+)
+
+internal data class LoopGuardDecision(
+    val block: Boolean,
+    val priorOccurrences: Int,
+)
+
+/**
+ * Pure, testable loop-detection decision, extracted from [GenerationLoop.generateText] so
+ * the act-observe reset and freshness-TTL rules can be unit-tested without an Android Context.
+ */
+internal object LoopGuard {
+    fun evaluate(
+        priorCalls: List<PriorToolCall>,
+        toolName: String,
+        signature: String,
+        nowMs: Long,
+        threshold: Int = LOOP_GUARD_REPEAT_THRESHOLD,
+        readOnlyTools: Set<String> = READ_ONLY_OBSERVATION_TOOLS,
+        freshnessTtlMs: Map<String, Long> = FRESHNESS_TTL_MS_BY_TOOL,
+    ): LoopGuardDecision {
+        // For observation tools, only repeats since the most recent ACTION count: acting on
+        // the world is progress, so identical observations taken before it are stale for
+        // loop-detection purposes. Side-effecting tools count every identical call in the
+        // turn (re-sending the same message 3x is a loop regardless of what ran between).
+        val relevant = if (toolName in readOnlyTools) {
+            val lastActionIdx = priorCalls.indexOfLast { it.toolName !in readOnlyTools }
+            if (lastActionIdx >= 0) priorCalls.subList(lastActionIdx + 1, priorCalls.size)
+            else priorCalls
+        } else {
+            priorCalls
+        }
+        val matching = relevant.filter { it.signature == signature }
+        val priorOccurrences = matching.size
+        if (priorOccurrences < threshold) return LoopGuardDecision(false, priorOccurrences)
+        // Freshness-TTL bypass: a real-time reader re-called after its TTL is a refresh, not
+        // a loop; let it through so the model gets a fresh reading instead of a stale one.
+        val ttl = freshnessTtlMs[toolName]
+        if (ttl != null && nowMs - matching.maxOf { it.epochMs } >= ttl) {
+            return LoopGuardDecision(false, priorOccurrences)
+        }
+        return LoopGuardDecision(true, priorOccurrences)
+    }
+}
+
+/**
+ * On resume after a tool-approval decision, picks every tool from the same model step that
+ * should execute now: the ones the user acted on ([UIMessagePart.Tool.canResumeExecution] -
+ * Approved/Denied/Answered) plus any sibling that was classified `Auto` but never got to run
+ * because the step broke early on a *different*, Pending sibling (#107 - otherwise those Auto
+ * tools are orphaned forever and the model never learns their results). Order matches [tools],
+ * i.e. the original call order. A tool still Pending is never included. This does not change
+ * [canResumeToolExecution] itself - Auto stays false there ([ToolApprovalStateTest] and the
+ * top-of-loop Pending-detection both rely on that); the inclusion happens only at this resume
+ * call site.
+ *
+ * An Auto tool with [UIMessagePart.Tool.executionStartedAt] set is excluded from the "never
+ * got to run" clause even though it isn't executed: that shape means a previous attempt was
+ * interrupted mid-execute (see [UIMessagePart.Tool.isInterruptedAttempt]), not that it's
+ * still waiting its turn. In production the top-of-generateText replay-safety pass already
+ * flips that tool to Denied before this function runs, but this pure function must not rely
+ * on that ordering to avoid re-running it.
+ */
+internal fun resumableToolsIncludingUnexecutedAuto(
+    tools: List<UIMessagePart.Tool>,
+): List<UIMessagePart.Tool> = tools.filter { tool ->
+    tool.canResumeExecution ||
+        (tool.approvalState is ToolApprovalState.Auto && !tool.isExecuted && tool.executionStartedAt == null)
+}
+
+class GenerationLoop(
+    private val context: Context,
+    private val providerManager: ProviderManager,
+    private val json: Json,
+    private val memoryRepo: MemoryRepository,
+    private val conversationRepo: ConversationRepository,
+    private val aiLoggingManager: AILoggingManager,
+    private val systemPromptBuilder: SystemPromptBuilder,
+) {
+    fun generateText(
+        settings: Settings,
+        model: Model,
+        messages: List<UIMessage>,
+        inputTransformers: List<InputMessageTransformer> = emptyList(),
+        outputTransformers: List<OutputMessageTransformer> = emptyList(),
+        assistant: Assistant,
+        memories: List<AssistantMemory>? = null,
+        tools: List<Tool> = emptyList(),
+        // Read live from the runtime holder, not captured once: the default expression is
+        // evaluated per call, so a settings change takes effect on the next turn.
+        maxSteps: Int = ToolRuntimeLimits.maxToolSteps,
+        processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
+        // Called after a tool result has been emitted and persisted, before the next model
+        // request is built. The callback may return a compacted request history; the returned
+        // list is request-only and does not replace the conversation's original messages.
+        onAfterToolExecution: suspend (List<UIMessage>) -> List<UIMessage>? = { null },
+        // Called immediately before every model request, including the request after a tool
+        // result. ChatService uses this to reassert the foreground service before a background
+        // continuation opens a new socket.
+        onBeforeModelRequest: suspend () -> Unit = {},
+        // Returns true when the user has pre-approved [toolName] for this turn (e.g.
+        // "Allow for this chat" or "Always Allow" granted earlier). When true, the loop
+        // below skips the Pending flip and lets the tool execute. ChatService injects the
+        // closure that reads ToolApprovalAllowList + ToolApprovalPreferences. Default
+        // returns false so callers that don't care still get vanilla approval gating.
+        isToolAutoApproved: suspend (toolName: String) -> Boolean = { false },
+        // Optional per-call addendum appended to the system prompt. Used by surfaces that
+        // need the model to know runtime context (e.g. "you're talking via Telegram, the
+        // chat_id is 12345") without polluting the user message body — without this the
+        // preamble is replayed in user history every turn, burning ~80 tokens × N turns.
+        systemAddendum: String? = null,
+        conversationSystemPrompt: String? = null,
+        conversationId: Uuid? = null,
+        conversationModeInjectionIds: Set<Uuid> = emptySet(),
+        conversationLorebookIds: Set<Uuid> = emptySet(),
+        workspaceCwd: String? = null,
+    ): Flow<GenerationChunk> = flow {
+        val provider = model.findProvider(settings.providers) ?: error("Provider not found")
+        val providerImpl = providerManager.getProviderByType(provider)
+
+        // Replay safety: scan the input messages for tools that were Approved + began
+        // execution but never produced output (process killed mid-execute). Without this
+        // pass, the loop below would treat them as "Approved, ready to run" and execute
+        // them AGAIN on replay — could double-charge a remote, duplicate a message send,
+        // re-overwrite a file. Flip them to Denied so the model sees a deterministic
+        // envelope and decides whether to retry deliberately.
+        var messages: List<UIMessage> = messages.map { msg ->
+            val newParts = msg.parts.map { part ->
+                if (part is UIMessagePart.Tool && part.isInterruptedAttempt) {
+                    Log.w(TAG, "replay: ${part.toolName} (${part.toolCallId}) had executionStartedAt set with empty output → Denied(interrupted_unknown_outcome)")
+                    part.copy(approvalState = ToolApprovalState.Denied(
+                        "interrupted_unknown_outcome: a previous attempt to execute this tool started " +
+                            "but did not complete (process killed mid-execute). The side effect MAY OR " +
+                            "MAY NOT have happened. Verify the target state before retrying — do not " +
+                            "blindly re-run the same call."
+                    ))
+                } else part
+            }
+            if (newParts == msg.parts) msg else msg.copy(parts = newParts)
+        }
+
+        val turnStartMs = android.os.SystemClock.elapsedRealtime()
+        var loopGuardTripCount = 0
+
+        for (stepIndex in 0 until maxSteps) {
+            // Wall-clock cap: any single user turn that has been running longer than the
+            // budget is force-ended, regardless of whether the model wants more steps.
+            // This is the second line of defence after maxSteps; without it a model that
+            // discovers many distinct tool calls (each within the loop guard) can still
+            // run for hours.
+            val elapsedMs = android.os.SystemClock.elapsedRealtime() - turnStartMs
+            if (elapsedMs > ToolRuntimeLimits.turnBudgetMs) {
+                Log.w(TAG, "generateText: wall-clock cap (${ToolRuntimeLimits.turnBudgetMs}ms) hit at step #$stepIndex; force-ending turn")
+                break
+            }
+            // Repeated loop-guard trips mean the model is flailing: it bumps into the
+            // guard, picks a different tool, that one also gets guarded, and so on. After
+            // N trips we just stop — the model is not going to recover, and every extra
+            // step is paid for in tokens.
+            if (loopGuardTripCount >= MAX_LOOP_GUARD_TRIPS_PER_TURN) {
+                Log.w(TAG, "generateText: loop-guard tripped $loopGuardTripCount times this turn; force-ending")
+                break
+            }
+
+            Log.i(TAG, "streamText: start step #$stepIndex (${model.id})")
+
+            val toolsInternal = buildList {
+                Log.i(TAG, "generateInternal: build tools($assistant)")
+                if (assistant.enableMemory) {
+                    val memoryAssistantId = if (assistant.useGlobalMemory) {
+                        MemoryRepository.GLOBAL_MEMORY_ID
+                    } else {
+                        assistant.id.toString()
+                    }
+                    buildMemoryTools(
+                        json = json,
+                        onCreation = { content ->
+                            memoryRepo.addMemory(memoryAssistantId, content)
+                        },
+                        onUpdate = { id, content ->
+                            memoryRepo.updateContent(id, content)
+                        },
+                        onDelete = { id ->
+                            memoryRepo.deleteMemory(id)
+                        }
+                    ).let(this::addAll)
+                }
+                addAll(tools)
+            }
+
+            // Check if we have tool calls ready to continue after user interaction.
+            val pendingTools = messages.lastOrNull()?.getTools()?.filter {
+                it.canResumeExecution
+            } ?: emptyList()
+
+            // Mixed-state guard: if the last message has tools STILL in Pending (waiting
+            // on user approval keyboard) but nothing canResumeExecution, the existing
+            // path would call generateInternal and start a brand-new assistant turn,
+            // orphaning the Pending tool. Bail out instead and let handleToolApproval
+            // re-enter when the user taps the keyboard.
+            if (pendingTools.isEmpty()) {
+                val lastHasPending = messages.lastOrNull()?.parts?.any { p ->
+                    p is UIMessagePart.Tool && p.isPending
+                } == true
+                if (lastHasPending) {
+                    Log.i(TAG, "generateText: last message has Pending tools; waiting for approval, not regenerating")
+                    break
+                }
+            }
+
+            val toolsToProcess: List<UIMessagePart.Tool>
+
+            // Skip generation if we have approved/denied tool calls to handle
+            if (pendingTools.isEmpty()) {
+                try {
+                    onBeforeModelRequest()
+                    generateInternal(
+                        assistant = assistant,
+                        settings = settings,
+                        systemAddendum = systemAddendum,
+                        messages = messages,
+                        onUpdateMessages = {
+                            messages = it.transforms(
+                                transformers = outputTransformers,
+                                context = context,
+                                model = model,
+                                assistant = assistant,
+                                settings = settings
+                            )
+                            emit(
+                                GenerationChunk.Messages(
+                                    messages.visualTransforms(
+                                        transformers = outputTransformers,
+                                        context = context,
+                                        model = model,
+                                        assistant = assistant,
+                                        settings = settings
+                                    )
+                                )
+                            )
+                        },
+                        transformers = inputTransformers,
+                        model = model,
+                        providerImpl = providerImpl,
+                        provider = provider,
+                        tools = toolsInternal,
+                        memories = memories ?: emptyList(),
+                        stream = assistant.streamOutput,
+                        processingStatus = processingStatus,
+                        conversationSystemPrompt = conversationSystemPrompt,
+                        conversationId = conversationId,
+                        conversationModeInjectionIds = conversationModeInjectionIds,
+                        conversationLorebookIds = conversationLorebookIds,
+                        workspaceCwd = workspaceCwd,
+                    )
+                } catch (t: Throwable) {
+                    // CancellationException is honoured verbatim — stopGeneration has its
+                    // own cancelToolByUser path that marks tools cancelled. We only need
+                    // to handle non-cancel failures here.
+                    if (t !is CancellationException) {
+                        // Server 5xx, JSON parse failure, OOM during chunk-merge, etc. Without
+                        // this transition, any tool already at Auto/Pending in the just-built
+                        // assistant message is stranded — the next user turn replays the
+                        // conversation with tool parts in an in-between state and downstream
+                        // filtering misbehaves. We mark them Denied with a generation_failed
+                        // envelope so the shape is deterministic on replay.
+                        val lastMsg = messages.lastOrNull()
+                        if (lastMsg != null) {
+                            val newParts = lastMsg.parts.map { part ->
+                                if (part is UIMessagePart.Tool &&
+                                    (part.approvalState is ToolApprovalState.Auto ||
+                                        part.approvalState is ToolApprovalState.Pending)) {
+                                    part.copy(approvalState = ToolApprovalState.Denied(
+                                        "generation_failed: ${t.javaClass.simpleName}: ${t.message.orEmpty()}"
+                                    ))
+                                } else part
+                            }
+                            messages = messages.dropLast(1) + lastMsg.copy(parts = newParts)
+                            emit(GenerationChunk.Messages(messages))
+                        }
+                    } else {
+                        // A stop mid-turn must leave the assistant message finalized the same
+                        // way a normal completion does below (e.g. ThinkTagTransformer closing
+                        // an unclosed <think> block) — otherwise stopGeneration persists a shape
+                        // the rest of the app never produces on its own. Reuse the exact same
+                        // transformer chain calls the success path runs, just before rethrowing.
+                        // The coroutine's Job is already cancelled here, so a plain suspend call
+                        // (transformer I/O, or emit reaching ChatService's collector and its own
+                        // suspend writes) would immediately re-throw — run under NonCancellable,
+                        // same as ChatService's own onCompletion persist for this exact reason.
+                        //
+                        // This flow ends in .flowOn(Dispatchers.IO), so this block runs in the
+                        // upstream producer coroutine: emit() can still throw (e.g. the
+                        // downstream channel already closed because the consumer tore down
+                        // first) even under NonCancellable. That must never replace the
+                        // original CancellationException — best-effort only: log and fall
+                        // through to the unconditional rethrow below regardless.
+                        // (stopGeneration itself persists after joining these jobs, so skipping
+                        // this finalize on failure is safe — see ChatService.stopGeneration.)
+                        try {
+                            withContext(NonCancellable) {
+                                messages = messages.visualTransforms(
+                                    transformers = outputTransformers,
+                                    context = context,
+                                    model = model,
+                                    assistant = assistant,
+                                    settings = settings
+                                )
+                                messages = messages.onGenerationFinish(
+                                    transformers = outputTransformers,
+                                    context = context,
+                                    model = model,
+                                    assistant = assistant,
+                                    settings = settings
+                                )
+                                if (messages.isNotEmpty()) {
+                                    messages = messages.slice(0 until messages.lastIndex) + messages.last().copy(
+                                        finishedAt = Clock.System.now()
+                                            .toLocalDateTime(TimeZone.currentSystemDefault())
+                                    )
+                                }
+                                emit(GenerationChunk.Messages(messages))
+                            }
+                        } catch (finalizeError: Throwable) {
+                            Log.w(TAG, "generateText: cancellation finalize failed, stop proceeds without it", finalizeError)
+                        }
+                    }
+                    throw t
+                }
+                messages = messages.visualTransforms(
+                    transformers = outputTransformers,
+                    context = context,
+                    model = model,
+                    assistant = assistant,
+                    settings = settings
+                )
+                messages = messages.onGenerationFinish(
+                    transformers = outputTransformers,
+                    context = context,
+                    model = model,
+                    assistant = assistant,
+                    settings = settings
+                )
+                messages = messages.slice(0 until messages.lastIndex) + messages.last().copy(
+                    finishedAt = Clock.System.now()
+                        .toLocalDateTime(TimeZone.currentSystemDefault())
+                )
+                emit(GenerationChunk.Messages(messages))
+
+                val toolCalls = messages.last().getTools().filter { !it.isExecuted }
+                if (toolCalls.isEmpty()) {
+                    // no tool calls, break
+                    break
+                }
+
+                // Imperative loop (was .map) so we can call the suspending
+                // [isToolAutoApproved] FRESH per-tool, not from a frozen pre-resolved set.
+                // Without this, a grant landing between the pre-resolve and the .map
+                // (user taps Always-Allow on tool X mid-iteration) gets ignored — X
+                // flips to Pending and a duplicate prompt is emitted even though X is
+                // now persisted-approved.
+                var hasPendingApproval = false
+                val updatedTools = ArrayList<UIMessagePart.Tool>(toolCalls.size)
+                for (tool in toolCalls) {
+                    val toolDef = toolsInternal.find { it.name == tool.toolName }
+                    // HARDLINE check: certain command patterns (rm -rf /, mkfs, shutdown,
+                    // fork bomb, …) are blocked unconditionally — even "Always Allow"
+                    // can't override. We check BEFORE the auto-approval lookup so a
+                    // permanently-allowed termux/ssh tool still can't smuggle one of
+                    // these through. Result: tool is marked Denied with the hardline
+                    // reason, the regular Denied branch downstream emits an error
+                    // envelope to the model without executing.
+                    val hardlineReason = me.rerere.rikkahub.data.ai.tools
+                        .HardlineCommandGuard.checkTool(tool.toolName, tool.input)
+                    val transformed = when {
+                        hardlineReason != null && tool.approvalState is ToolApprovalState.Auto -> {
+                            Log.w(TAG, "hardline-blocked ${tool.toolName}: $hardlineReason")
+                            tool.copy(approvalState = ToolApprovalState.Denied(
+                                "blocked by safety floor (hardline): $hardlineReason. " +
+                                    "This command cannot run via the agent under any " +
+                                    "circumstances. If the user genuinely needs it, they " +
+                                    "should run it themselves in a terminal outside the agent."
+                            ))
+                        }
+                        // Tool needs approval and state is Auto:
+                        toolDef?.needsApproval(tool.inputAsJson()) == true &&
+                            tool.approvalState is ToolApprovalState.Auto -> {
+                            // Fresh per-tool auto-approval check (was a frozen pre-
+                            // resolved set). Costs a DataStore.first() per tool but tools
+                            // are typically <5 per turn so the latency is negligible, and
+                            // freshness matters for the YOLO toggle / mid-iteration grants.
+                            if (isToolAutoApproved(tool.toolName)) {
+                                tool  // leave as Auto so the executor runs it without prompting
+                            } else {
+                                hasPendingApproval = true
+                                tool.copy(approvalState = ToolApprovalState.Pending)
+                            }
+                        }
+                        // State is Pending -> keep waiting
+                        tool.approvalState is ToolApprovalState.Pending -> {
+                            hasPendingApproval = true
+                            tool
+                        }
+
+                        else -> tool
+                    }
+                    updatedTools.add(transformed)
+                }
+
+                // If any tools were updated to Pending, update the message and break
+                if (updatedTools != toolCalls) {
+                    val lastMessage = messages.last()
+                    val updatedParts = lastMessage.parts.map { part ->
+                        if (part is UIMessagePart.Tool) {
+                            updatedTools.find { it.toolCallId == part.toolCallId } ?: part
+                        } else {
+                            part
+                        }
+                    }
+                    messages = messages.dropLast(1) + lastMessage.copy(parts = updatedParts)
+                    emit(GenerationChunk.Messages(messages))
+                }
+
+                // If there are pending approvals, break and wait for user
+                if (hasPendingApproval) {
+                    Log.i(TAG, "generateText: waiting for tool approval")
+                    break
+                }
+
+                toolsToProcess = updatedTools
+            } else {
+                // Resuming after user interaction - use the resumable tools, plus any Auto
+                // sibling from the same step that never executed because the step broke early
+                // on a Pending tool (#107).
+                toolsToProcess = resumableToolsIncludingUnexecutedAuto(messages.last().getTools())
+                Log.i(TAG, "generateText: resuming with ${toolsToProcess.size} resumable tools")
+            }
+
+            // Handle tools (execute approved tools, handle denied tools)
+            val executedTools = arrayListOf<UIMessagePart.Tool>()
+            toolsToProcess.forEach { tool ->
+                when (tool.approvalState) {
+                    is ToolApprovalState.Denied -> {
+                        // Tool was denied by user
+                        val reason = (tool.approvalState as ToolApprovalState.Denied).reason
+                        executedTools += tool.copy(
+                            output = listOf(
+                                UIMessagePart.Text(
+                                    json.encodeToString(
+                                        buildJsonObject {
+                                            put(
+                                                "error",
+                                                JsonPrimitive("Tool execution denied by user. Reason: ${reason.ifBlank { "No reason provided" }}")
+                                            )
+                                        }
+                                    )
+                                )
+                            )
+                        )
+                    }
+
+                    is ToolApprovalState.Answered -> {
+                        // Tool was answered by user (e.g., ask_user tool)
+                        val answer = (tool.approvalState as ToolApprovalState.Answered).answer
+                        executedTools += tool.copy(
+                            output = listOf(
+                                UIMessagePart.Text(answer)
+                            )
+                        )
+                    }
+
+                    is ToolApprovalState.Pending -> {
+                        // Should not reach here, but just in case
+                    }
+
+                    else -> {
+                        // Auto or Approved - execute the tool.
+                        //
+                        // Defence-in-depth HARDLINE re-check: the primary check at line ~442
+                        // only runs when approvalState is Auto (the generation step that just
+                        // proposed the tool). On the resume path (pendingTools branch above)
+                        // tools arrive here with state=Approved and skip that block entirely.
+                        // Re-check here so that a hardline-matched tool persisted in Approved
+                        // state from an old DB row (pre-hardline schema, direct DB edit) can
+                        // never execute via the resume path.
+                        val resumeHardlineReason = me.rerere.rikkahub.data.ai.tools
+                            .HardlineCommandGuard.checkTool(tool.toolName, tool.input)
+                        if (resumeHardlineReason != null) {
+                            Log.w(TAG, "generateText: resume-path hardline re-check blocked ${tool.toolName}: $resumeHardlineReason")
+                            executedTools += tool.copy(
+                                output = listOf(
+                                    UIMessagePart.Text(
+                                        json.encodeToString(buildJsonObject {
+                                            put("error", JsonPrimitive(
+                                                "blocked by safety floor (hardline): $resumeHardlineReason. " +
+                                                    "This command cannot run via the agent under any circumstances."
+                                            ))
+                                        })
+                                    )
+                                )
+                            )
+                            return@forEach
+                        }
+
+                        // Loop-guard: check whether the model has already called this exact
+                        // tool with the same args multiple times in this turn. Refuse a
+                        // repeat run and inject a "loop_detected" envelope so the model has
+                        // to pivot to a different approach. Cost safety net.
+                        val signature = tool.toolName + "::" + tool.input
+                        // "This turn" = since the most recent user message. Earlier
+                        // identical calls in PREVIOUS turns aren't the model flailing
+                        // now — they're history, and counting them produces a confusing
+                        // "you already called this 3 times in this turn" envelope after
+                        // a single fresh call.
+                        val turnStartIndex = messages.indexOfLast { it.role == MessageRole.USER }
+                        val turnSlice = messages.subList(
+                            (turnStartIndex + 1).coerceAtLeast(0),
+                            messages.size
+                        )
+                        // Flatten this turn's executed tool calls in chronological order. The
+                        // epoch ms (for the freshness-TTL bypass) comes from the parent
+                        // message's finish/create time, matching the prior inline behaviour.
+                        val priorCalls = turnSlice.flatMap { msg ->
+                            val epochMs = (msg.finishedAt ?: msg.createdAt)
+                                .toInstant(TimeZone.currentSystemDefault()).toEpochMilliseconds()
+                            msg.parts.filterIsInstance<UIMessagePart.Tool>()
+                                .filter { it.isExecuted }
+                                .map { PriorToolCall(it.toolName, it.toolName + "::" + it.input, epochMs) }
+                        }
+                        val loopDecision = LoopGuard.evaluate(
+                            priorCalls = priorCalls,
+                            toolName = tool.toolName,
+                            signature = signature,
+                            nowMs = System.currentTimeMillis(),
+                        )
+                        val priorOccurrences = loopDecision.priorOccurrences
+                        if (loopDecision.block) {
+                            loopGuardTripCount++
+                            Log.w(TAG, "generateText: loop-guard tripped on $signature (${priorOccurrences + 1} repeat, trip #$loopGuardTripCount this turn); injecting bail-out envelope")
+                            executedTools += tool.copy(
+                                output = listOf(
+                                    UIMessagePart.Text(
+                                        json.encodeToString(
+                                            buildJsonObject {
+                                                put("error", JsonPrimitive("loop_detected"))
+                                                put(
+                                                    "recovery", JsonPrimitive(
+                                                        "You have already called ${tool.toolName} with identical arguments " +
+                                                            "${priorOccurrences} time(s) in this turn without making progress. " +
+                                                            "Stop retrying. Either: (a) change the args meaningfully, (b) try a " +
+                                                            "different tool that addresses the underlying request, or (c) hand " +
+                                                            "back to the user with what you have so far. Examples: for 'search " +
+                                                            "X in chrome' use open_url(\"https://www.google.com/search?q=X\") " +
+                                                            "instead of fighting Chrome's URL bar via set_text; for terminal " +
+                                                            "tasks use termux_run_command instead of typing into Termux."
+                                                    )
+                                                )
+                                            }
+                                        )
+                                    )
+                                )
+                            )
+                            // Skip the actual execution. The next generation step will see
+                            // this envelope and (if the model is well-prompted by the skill
+                            // docs) will pivot to a different approach.
+                            return@forEach
+                        }
+                        // Pre-parse args BEFORE the runCatching block so we can surface a
+                        // clean structured envelope when the LLM provider truncates the
+                        // streaming response mid-string (max_tokens hit, network drop, etc.).
+                        // Without this, kotlinx.serialization's raw exception message —
+                        // which includes the entire failed input — lands in the LLM-facing
+                        // `detail` field, can be thousands of tokens, and the model often
+                        // retries the same too-big call.
+                        val parsedArgs = runCatching {
+                            json.parseToJsonElement(tool.input.ifBlank { "{}" })
+                        }
+                        if (parsedArgs.isFailure) {
+                            val cause = parsedArgs.exceptionOrNull()
+                            Log.w(TAG, "tool ${tool.toolName} args failed to parse (likely truncated stream)", cause)
+                            executedTools += tool.copy(
+                                output = listOf(
+                                    UIMessagePart.Text(
+                                        json.encodeToString(buildJsonObject {
+                                            put("error", JsonPrimitive("invalid_tool_args"))
+                                            put(
+                                                "detail",
+                                                JsonPrimitive(
+                                                    (cause?.message ?: cause?.javaClass?.simpleName ?: "json_parse_failed")
+                                                        .take(200)
+                                                ),
+                                            )
+                                            put(
+                                                "recovery",
+                                                JsonPrimitive(
+                                                    "Tool args JSON failed to parse — most often the provider's " +
+                                                        "stream was cut off mid-string by max_tokens or a network drop. " +
+                                                        "Retry with a shorter call. For long payloads (e.g. a 4000-char " +
+                                                        "message), split into multiple smaller tool calls or shrink the " +
+                                                        "content."
+                                                ),
+                                            )
+                                            put(
+                                                "exception",
+                                                JsonPrimitive(cause?.javaClass?.simpleName ?: "JsonParseException"),
+                                            )
+                                        })
+                                    )
+                                )
+                            )
+                            return@forEach
+                        }
+                        // Resolve the tool def BEFORE the runCatching block, same reason as
+                        // parsedArgs above: this is not a random tool-body throw, so it gets
+                        // its own structured envelope naming exactly what was called and what
+                        // was actually available — rather than the generic 500-char-capped
+                        // exception message the runCatching/.onFailure below produces (#88:
+                        // this is the self-diagnosing surface for a server that connects and
+                        // lists tools but contributes zero entries to the dispatch list, e.g.
+                        // a newly mcp_add-ed server never enabled for this assistant).
+                        val toolDef = toolsInternal.find { toolDef -> toolDef.name == tool.toolName }
+                        if (toolDef == null) {
+                            Log.w(TAG, "tool ${tool.toolName} not found among ${toolsInternal.size} tools available this turn")
+                            executedTools += tool.copy(
+                                output = listOf(
+                                    UIMessagePart.Text(
+                                        json.encodeToString(buildJsonObject {
+                                            put("error", JsonPrimitive("tool_not_found"))
+                                            put(
+                                                "detail",
+                                                JsonPrimitive("Tool '${tool.toolName}' was called but is not among the tools available this turn."),
+                                            )
+                                            put(
+                                                "tools_available_this_turn",
+                                                JsonPrimitive(toolsInternal.joinToString(", ") { it.name }.take(1500)),
+                                            )
+                                        })
+                                    )
+                                )
+                            )
+                            return@forEach
+                        }
+                        runCatching {
+                            val args = parsedArgs.getOrThrow()
+                            if (BuildConfig.DEBUG) {
+                                Log.i(TAG, "generateText: executing tool ${toolDef.name} with args: ${redactSecrets(args)}")
+                            }
+                            // Mark the tool as "execution started" BEFORE actually running.
+                            // ChatService persists this when it sees the chunk so a process
+                            // kill between mark-and-output leaves a clear breadcrumb on disk:
+                            // on replay we'll see Approved + executionStartedAt + empty output
+                            // and refuse to silently re-run. The mark survives via the
+                            // existing emit-and-persist plumbing — see ChatService chunk
+                            // handler's needsImmediatePersist branch.
+                            val markedTool = tool.copy(executionStartedAt = System.currentTimeMillis())
+                            run {
+                                val lastMsg = messages.lastOrNull()
+                                if (lastMsg != null) {
+                                    val markedParts = lastMsg.parts.map { p ->
+                                        if (p is UIMessagePart.Tool && p.toolCallId == tool.toolCallId) markedTool else p
+                                    }
+                                    messages = messages.dropLast(1) + lastMsg.copy(parts = markedParts)
+                                    emit(GenerationChunk.Messages(messages))
+                                }
+                            }
+                            // Hard-cap individual tool execution at the remaining wall-clock
+                            // budget so a single tool with its OWN long timeout (camera 5min,
+                            // ssh_exec timeout_seconds=300) can't carry the turn past the
+                            // global ${ToolRuntimeLimits.turnBudgetMs}ms cap. If the budget is
+                            // already blown when we start the tool, return a structured
+                            // wall-clock envelope instead of even attempting.
+                            val remainingMs = ToolRuntimeLimits.turnBudgetMs -
+                                (android.os.SystemClock.elapsedRealtime() - turnStartMs)
+                            val result = if (remainingMs <= 0L) {
+                                Log.w(TAG, "generateText: ${toolDef.name} skipped — wall-clock budget already exceeded")
+                                listOf(UIMessagePart.Text(json.encodeToString(buildJsonObject {
+                                    put("error", JsonPrimitive("tool_cancelled_wall_clock"))
+                                    put("detail", JsonPrimitive("turn budget exceeded before tool started"))
+                                })))
+                            } else {
+                                withTimeoutOrNull(remainingMs) { toolDef.execute(args) }
+                                    ?: run {
+                                        Log.w(TAG, "generateText: ${toolDef.name} cancelled — wall-clock budget exhausted mid-execution")
+                                        listOf(UIMessagePart.Text(json.encodeToString(buildJsonObject {
+                                            put("error", JsonPrimitive("tool_cancelled_wall_clock"))
+                                            put(
+                                                "detail",
+                                                JsonPrimitive("tool execution exceeded the ${ToolRuntimeLimits.turnBudgetMs / 1000}s turn budget")
+                                            )
+                                        })))
+                                    }
+                            }
+                            // Upstream tool-output truncation: when the workspace shell is
+                            // available, oversized text output is spilled to /tool_outputs/
+                            // and replaced with a preview + read/grep instructions so the
+                            // model can pull the full payload on demand instead of burning
+                            // the context window.
+                            val hasShellAccess = toolsInternal.any { it.name == "workspace_shell" }
+                            executedTools += markedTool.copy(
+                                output = maybeTruncateToolOutput(tool.toolCallId, result, hasShellAccess)
+                            )
+                        }.onFailure {
+                            // runCatching also captures CancellationException (e.g. the user
+                            // pressed stop mid tool execution). That must propagate, not turn
+                            // into a tool_failed envelope: a swallowed cancellation leaves a
+                            // misleading tool_failed result instead of the clean
+                            // cancelled-by-user one from cancelToolByUser, and the loop may
+                            // wrongly continue to the next sibling tool. Same pattern as the
+                            // catch above this runCatching block.
+                            if (it is CancellationException) throw it
+                            // Stack trace stays in logcat for debugging; the JSON envelope
+                            // sent BACK to the LLM gets just the exception's message and a
+                            // short class hint. Stuffing the full multi-frame R8-obfuscated
+                            // trace into `error` (the prior behaviour) burned hundreds of
+                            // tokens per failure, confused the model, and surfaced
+                            // user-visible "java.lang.IllegalStateException at ..." walls
+                            // for what was usually a one-line "name is required" problem.
+                            Log.w(TAG, "tool ${tool.toolName} threw", it)
+                            executedTools += tool.copy(
+                                output = listOf(
+                                    UIMessagePart.Text(
+                                        json.encodeToString(
+                                            buildJsonObject {
+                                                put("error", JsonPrimitive("tool_failed"))
+                                                put(
+                                                    "detail",
+                                                    // Cap at 500 chars so a tool that throws with
+                                                    // a giant message (e.g. an OkHttp body dump or
+                                                    // an echoed input arg) doesn't ship 8000+
+                                                    // tokens back to the LLM on every failure.
+                                                    JsonPrimitive((it.message ?: it.javaClass.simpleName).take(500)),
+                                                )
+                                                // Class name as a separate hint so the LLM can
+                                                // distinguish validation (IllegalStateException /
+                                                // IllegalArgumentException) from runtime issues.
+                                                put(
+                                                    "exception",
+                                                    JsonPrimitive(it.javaClass.simpleName),
+                                                )
+                                            }
+                                        )
+                                    )
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (executedTools.isEmpty()) {
+                // No results to add (all tools were pending)
+                break
+            }
+
+            // Update last message with executed tools (NOT create TOOL message)
+            val lastMessage = messages.last()
+            val updatedParts = lastMessage.parts.map { part ->
+                if (part is UIMessagePart.Tool) {
+                    executedTools.find { it.toolCallId == part.toolCallId } ?: part
+                } else part
+            }
+            messages = messages.dropLast(1) + lastMessage.copy(parts = updatedParts)
+            emit(
+                GenerationChunk.Messages(
+                    messages.transforms(
+                        transformers = outputTransformers,
+                        context = context,
+                        model = model,
+                        assistant = assistant,
+                        settings = settings
+                    )
+                )
+            )
+
+            onAfterToolExecution(messages)?.let { compactedMessages ->
+                Log.i(TAG, "generateText: replacing request history after tool execution")
+                messages = compactedMessages
+            }
+        }
+
+    }
+        .onStart {
+            // Reset per-turn navigation tracking and surface the overlay so the user
+            // sees that automation is happening even when the agent runs from Telegram.
+            AgentTurnTracker.reset()
+            AgentOverlay.show(context)
+        }
+        .onCompletion {
+            AgentOverlay.hide(context)
+            handleAutoReturnAfterTurn()
+        }
+        .flowOn(Dispatchers.IO)
+
+    /**
+     * If the agent navigated away from RikkaHub during this turn (launch_app / open_url) and
+     * the user is still on that destination, bring RikkaHub back to the foreground so the
+     * user is not stranded inside Chrome / Termux / etc. If the user manually switched apps
+     * mid-turn, we skip the auto-return and surface a Toast explaining the safety behavior.
+     */
+    private fun handleAutoReturnAfterTurn() {
+        if (!AgentTurnTracker.didNavigateAway()) return
+        // Only auto-return when the agent actually drove the destination app via screen
+        // automation (tap, click_node, set_text, swipe, scroll, global_action). A pure
+        // "open Chrome and stay there" request is just launch_app + a text reply — yanking
+        // the user back to RikkaHub in that case defeats the purpose of the request.
+        if (!AgentTurnTracker.didAutomate()) return
+        val destination = AgentTurnTracker.lastDestination()
+        val currentForeground = RikkaAccessibilityService.instance
+            ?.rootInActiveWindow?.packageName?.toString()
+
+        val userSwitchedAway = destination != null
+            && currentForeground != null
+            && currentForeground != destination
+            && currentForeground != context.packageName
+
+        if (userSwitchedAway) {
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(
+                    context.applicationContext,
+                    "RikkaHub: skipped auto-return because you switched apps. (Safety feature)",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            return
+        }
+
+        val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+            ?: return
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+        try {
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            // startActivity throws ActivityNotFoundException / SecurityException —
+            // both Exception. Catching Throwable here would also swallow JVM errors
+            // (OOM, StackOverflowError); let those propagate.
+            Log.w(TAG, "auto-return launch failed", e)
+        }
+    }
+
+    private suspend fun generateInternal(
+        assistant: Assistant,
+        settings: Settings,
+        systemAddendum: String? = null,
+        messages: List<UIMessage>,
+        onUpdateMessages: suspend (List<UIMessage>) -> Unit,
+        transformers: List<MessageTransformer>,
+        model: Model,
+        providerImpl: Provider<ProviderSetting>,
+        provider: ProviderSetting,
+        tools: List<Tool>,
+        memories: List<AssistantMemory>,
+        stream: Boolean,
+        processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
+        conversationSystemPrompt: String? = null,
+        conversationId: Uuid? = null,
+        conversationModeInjectionIds: Set<Uuid> = emptySet(),
+        conversationLorebookIds: Set<Uuid> = emptySet(),
+        workspaceCwd: String? = null,
+    ) {
+        val internalMessages = buildList {
+            // Conversation-level system prompt override (upstream): when the assistant
+            // allows it and the conversation supplies one, it replaces the assistant prompt.
+            val effectiveSystemPrompt =
+                if (assistant.allowConversationSystemPrompt && !conversationSystemPrompt.isNullOrBlank()) {
+                    conversationSystemPrompt
+                } else {
+                    assistant.systemPrompt
+                }
+            val memoryPrompt = if (assistant.enableMemory) {
+                buildMemoryPrompt(memories = memories)
+            } else ""
+            val recentChatsPrompt = if (assistant.enableRecentChatsReference) {
+                buildRecentChatsPrompt(assistant, conversationRepo)
+            } else ""
+            val toolPrompts = tools.map { tool -> tool.systemPrompt(model, messages) }
+            // Split into stable (assistant + tools) and volatile (memory + recent chats +
+            // addendum) so prompt caching survives memory injection: the stable part is the
+            // cached prefix, the volatile part sits after it. See SystemPromptBuilder.
+            val (stableSystem, volatileSystem) = systemPromptBuilder.buildSections(
+                assistantPrompt = effectiveSystemPrompt,
+                memoryPrompt = memoryPrompt,
+                recentChatsPrompt = recentChatsPrompt,
+                toolPrompts = toolPrompts,
+                systemAddendum = systemAddendum,
+            )
+            val systemParts = buildList {
+                if (stableSystem.isNotBlank()) add(UIMessagePart.Text(stableSystem))
+                if (volatileSystem.isNotBlank()) add(UIMessagePart.Text(volatileSystem))
+            }
+            if (systemParts.isNotEmpty()) {
+                add(UIMessage(role = MessageRole.SYSTEM, parts = systemParts, isSynthetic = true))
+            }
+            // Keeps the fork's multi-part system assembly and tool-image ageing, on top of
+            // upstream's isSynthetic marker (keeps this built-up system prompt out of
+            // TemplateTransformer) and its stepped truncation (which now preserves
+            // prompt caching instead of trimming one message at a time).
+            addAll(messages.limitContext(assistant.contextMessageLimit).ageOldToolImages())
+        }.transforms(
+            transformers = transformers,
+            context = context,
+            model = model,
+            assistant = assistant,
+            settings = settings,
+            conversationModeInjectionIds = conversationModeInjectionIds,
+            conversationLorebookIds = conversationLorebookIds,
+            processingStatus = processingStatus,
+            workspaceCwd = workspaceCwd,
+        )
+
+        var messages: List<UIMessage> = messages
+        val params = TextGenerationParams(
+            model = model,
+            temperature = assistant.temperature,
+            topP = assistant.topP,
+            maxTokens = assistant.maxTokens,
+            maxStreamRetries = if (settings.networkSetting.enableAutoRetry) settings.responseStreamMaxRetries else 0,
+            tools = tools,
+            reasoningLevel = assistant.reasoningLevel,
+            customHeaders = buildList {
+                addAll(assistant.customHeaders)
+                addAll(model.customHeaders)
+            },
+            customBody = buildList {
+                addAll(assistant.customBodies)
+                addAll(model.customBodies)
+            },
+            sessionId = conversationId?.toString(),
+        )
+        try {
+            if (stream) {
+                aiLoggingManager.addLog(
+                    AILogging.Generation(
+                        params = params,
+                        messages = messages,
+                        providerSetting = provider,
+                        stream = true
+                    )
+                )
+                var receivedMeaningfulOutput = false
+                var receivedAnyChunk = false
+                val streamChunkHandler = StreamChunkHandler(model)
+                providerImpl.streamText(
+                    providerSetting = provider,
+                    messages = internalMessages,
+                    params = params
+                ).onCompletion { cause ->
+                    // Some SSE implementations report an abruptly closed socket through onClosed
+                    // without an exception. Treat a clean close with no chunks at all as a transport
+                    // failure so the retry policy can recover a background continuation. A clean
+                    // close after chunks arrived but none produced parseable parts is a permanent
+                    // condition (unrecognized part shapes), not a transport hiccup, so it must not
+                    // burn retries - log it and let the generation end normally with an empty reply.
+                    if (cause == null && shouldReportEmptyGenerationStream(receivedAnyChunk)) {
+                        throw IOException("Model stream closed without meaningful output")
+                    }
+                    if (cause == null && receivedAnyChunk && !receivedMeaningfulOutput) {
+                        Log.w(
+                            TAG,
+                            "streamText: stream closed after chunks arrived but none contained " +
+                                "parseable parts; ending without retry",
+                        )
+                    }
+                }.retryWhen { cause, retryAttempt ->
+                    val shouldRetry = shouldRetryGenerationStreamFailure(
+                        failure = cause,
+                        retryAttempt = retryAttempt,
+                        maxRetries = params.maxStreamRetries,
+                        receivedMeaningfulOutput = receivedMeaningfulOutput,
+                    )
+                    if (shouldRetry) {
+                        // A new attempt is about to start collecting from scratch: reset the
+                        // per-attempt "did anything arrive" flag so onCompletion's transport-failure
+                        // check reflects this attempt, not a chunk seen in an earlier one.
+                        receivedAnyChunk = false
+                        val delayMs = generationStreamRetryDelayMs(retryAttempt)
+                        processingStatus.value = retryStatusText(
+                            context = context,
+                            retryNumber = retryAttempt + 1,
+                            maxRetries = params.maxStreamRetries,
+                            failure = cause,
+                        )
+                        Log.w(
+                            TAG,
+                            "streamText: retrying after failure " +
+                                "(${retryAttempt + 1}/${params.maxStreamRetries}) in ${delayMs}ms",
+                            cause,
+                        )
+                        delay(delayMs)
+                    }
+                    shouldRetry
+                }.collect {
+                    receivedAnyChunk = true
+                    if (isMeaningfulStreamChunk(it)) {
+                        receivedMeaningfulOutput = true
+                        clearRetryStatus(processingStatus)
+                    }
+                    messages = streamChunkHandler.handle(messages, it)
+                    onUpdateMessages(messages)
+                }
+            } else {
+                aiLoggingManager.addLog(
+                    AILogging.Generation(
+                        params = params,
+                        messages = messages,
+                        providerSetting = provider,
+                        stream = false
+                    )
+                )
+                val result = retryGenerationTransportRequest(
+                    maxRetries = params.maxStreamRetries,
+                    onRetry = { retryNumber, failure ->
+                        processingStatus.value = retryStatusText(
+                            context = context,
+                            retryNumber = retryNumber,
+                            maxRetries = params.maxStreamRetries,
+                            failure = failure,
+                        )
+                    },
+                ) {
+                    providerImpl.generateText(
+                        providerSetting = provider,
+                        messages = internalMessages,
+                        params = params,
+                    )
+                }
+                messages = messages.handleTextGenerationResult(result = result, model = model)
+                onUpdateMessages(messages)
+            }
+        } finally {
+            processingStatus.value = null
+        }
+    }
+
+    private fun maybeTruncateToolOutput(
+        toolCallId: String,
+        output: List<UIMessagePart>,
+        hasShellAccess: Boolean,
+    ): List<UIMessagePart> {
+        val textParts = output.filterIsInstance<UIMessagePart.Text>()
+        val nonTextParts = output.filter { it !is UIMessagePart.Text }
+        val totalChars = textParts.sumOf { it.text.length }
+
+        if (totalChars <= MAX_TOOL_OUTPUT_CHARS || !hasShellAccess) return output
+
+        Log.i(TAG, "maybeTruncateToolOutput: truncating tool $toolCallId output ($totalChars chars)")
+
+        val fullText = textParts.joinToString("\n") { it.text }
+        val preview = fullText.take(TOOL_OUTPUT_PREVIEW_CHARS)
+
+        val fileName = "${toolCallId}.txt"
+        val outputDir = File(context.filesDir, FileFolders.TOOL_OUTPUTS).apply { mkdirs() }
+        File(outputDir, fileName).writeText(fullText)
+
+        return listOf(
+            UIMessagePart.Text(
+                buildString {
+                    appendLine("[Tool output truncated: $totalChars characters total]")
+                    appendLine("Full output saved to: /tool_outputs/$fileName")
+                    appendLine("Use shell to read: `cat /tool_outputs/$fileName`")
+                    appendLine("Use shell to search: `grep \"pattern\" /tool_outputs/$fileName`")
+                    appendLine()
+                    append(preview)
+                }
+            )
+        ) + nonTextParts
+    }
+
+}

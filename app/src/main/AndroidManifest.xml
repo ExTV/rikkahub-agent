@@ -1,0 +1,437 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+  xmlns:tools="http://schemas.android.com/tools">
+
+  <uses-permission android:name="android.permission.INTERNET" />
+  <!-- Required for ConnectivityManager.registerNetworkCallback (NetworkChangeMonitor)
+       which evicts the OkHttp connection pool on default-network changes. Fixes the
+       post-Termux-interactive-session DNS bug where the JVM negative-cached a transient
+       lookup failure during background and held onto it after return. Auto-granted (normal
+       permission) but declaring is required. -->
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <uses-permission android:name="android.permission.CAMERA" />
+  <uses-permission
+    android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+    android:maxSdkVersion="28" />
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
+  <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+  <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+  <!-- Android 17 (API 37) gates all local-network sockets behind this runtime
+       permission. Required by SSH (LAN hosts) and the web server (LAN access);
+       the runtime check is centralized in RikkaHubApp / SshTool / the toggle UI
+       and short-circuits to "always granted" on older API levels where the
+       permission doesn't exist. -->
+  <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+  <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+  <uses-permission
+    android:name="android.permission.PACKAGE_USAGE_STATS"
+    tools:ignore="ProtectedPermissions" />
+  <uses-permission android:name="android.permission.READ_CALENDAR" />
+  <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+
+  <uses-permission android:name="android.permission.VIBRATE" />
+  <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+  <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+  <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+  <!-- Phase 12 — required for geofence triggers on Android 10+. The user grants this
+       lazily when they enable the first geofence workflow; without it, geofence
+       registration silently fails and the workflow row's last_run_status surfaces
+       "Unavailable on this device". -->
+  <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+  <!-- Phase 12 — required for bluetooth_device_connected / bluetooth_device_disconnected
+       triggers on Android 12+. -->
+  <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+  <uses-permission android:name="android.permission.WRITE_SETTINGS"
+      tools:ignore="ProtectedPermissions" />
+  <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+
+  <uses-permission android:name="android.permission.READ_CONTACTS" />
+  <uses-permission android:name="android.permission.READ_CALL_LOG" />
+  <uses-permission android:name="android.permission.READ_SMS" />
+  <uses-permission android:name="android.permission.RECORD_AUDIO" />
+  <!-- Required so list_files / find_files / read_file can enumerate and read
+       files the app didn't create itself. Without this, scoped storage on
+       Android 11+ hides every pre-existing file from File.listFiles(), even
+       though stat() still works (which is why file_info appeared to work
+       while list_files returned only directories + own creations). Granted
+       via Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION when the
+       user toggles the Files tool on. -->
+  <uses-permission
+      android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+      tools:ignore="ScopedStorage" />
+  <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+  <uses-permission
+      android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+      tools:ignore="BatteryLife" />
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+  <uses-permission
+      android:name="android.permission.QUERY_ALL_PACKAGES"
+      tools:ignore="QueryAllPackagesPermission" />
+  <!-- Custom permission Termux's RunCommandService gates access by. Without this declaration
+       ActivityManager rejects our intent with "Permission Denial requires
+       com.termux.permission.RUN_COMMAND" before Termux even sees it. The user still needs
+       allow-external-apps=true in ~/.termux/termux.properties on their side. -->
+  <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+
+  <!-- Phase 25 — Phase 3 second cut. SEND_SMS is a runtime (dangerous) permission granted
+       at toggle-on for the send_sms tool. SET_WALLPAPER and NFC are install-time. SAF and
+       the archive tools need no manifest change (SAF is grant-driven; zip is pure JDK). -->
+  <uses-permission android:name="android.permission.SEND_SMS" />
+  <uses-permission android:name="android.permission.SET_WALLPAPER" />
+  <uses-permission android:name="android.permission.NFC" />
+
+  <!-- Signature-protected permission exposed by the co-signed agent-keyboard IME. Granted
+       at install time because both apps are signed with the same key; lets RikkaHub bind
+       agent-keyboard's KeyboardApiService and drive the active text field over AIDL. -->
+  <uses-permission android:name="dev.patrickgold.florisboard.permission.AGENT_KEYBOARD_API" />
+
+  <!-- Shizuku's documented setup: gates the pre-v11 (API 23) provider handshake path some
+       older Shizuku server builds still use. Also merged in automatically from the
+       dev.rikka.shizuku:provider artifact's own manifest; declared here too per the
+       library's setup instructions. -->
+  <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+
+  <uses-feature
+    android:name="android.hardware.nfc"
+    android:required="false" />
+  <uses-feature
+    android:name="android.hardware.camera"
+    android:required="false" />
+  <uses-feature
+    android:name="android.hardware.camera.autofocus"
+    android:required="false" />
+  <uses-feature android:name="android.hardware.telephony" android:required="false" />
+  <uses-feature android:name="android.hardware.location" android:required="false" />
+  <uses-feature android:name="android.hardware.wifi" android:required="false" />
+  <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
+  <uses-feature android:name="android.hardware.camera.flash" android:required="false" />
+  <uses-feature android:name="android.hardware.fingerprint" android:required="false" />
+  <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
+  <queries>
+    <intent>
+      <action android:name="android.intent.action.TTS_SERVICE" />
+    </intent>
+    <!-- Required so launch_app / list_installed_apps can see other launcher apps and so
+         screen-time can resolve app names on Android 11+. QUERY_ALL_PACKAGES above is the
+         catch-all; this is the safer alternative the system queries when it is denied. -->
+    <intent>
+      <action android:name="android.intent.action.MAIN" />
+      <category android:name="android.intent.category.LAUNCHER" />
+    </intent>
+    <!-- Android 11+ package visibility: required so KeyboardApiClient can bindService into
+         the agent-keyboard package. Without this the bind silently fails on API 30+. -->
+    <package android:name="dev.patrickgold.florisboard" />
+    <!-- Android 11+ package visibility: required so ShizukuManager.isInstalled can see the
+         Shizuku app (moe.shizuku.privileged.api) without QUERY_ALL_PACKAGES. -->
+    <package android:name="moe.shizuku.privileged.api" />
+    <!-- Resolve the home launcher so screen-time can exclude it. -->
+    <intent>
+      <action android:name="android.intent.action.MAIN" />
+      <category android:name="android.intent.category.HOME" />
+    </intent>
+  </queries>
+
+  <application
+    android:name=".RikkaHubApp"
+    android:largeHeap="true"
+    android:allowBackup="true"
+    android:appCategory="productivity"
+    android:dataExtractionRules="@xml/data_extraction_rules"
+    android:enableOnBackInvokedCallback="true"
+    android:fullBackupContent="@xml/backup_rules"
+    android:icon="@mipmap/ic_launcher"
+    android:label="@string/app_name"
+    android:supportsRtl="true"
+    android:theme="@style/Theme.Rikkahub"
+    android:usesCleartextTraffic="true"
+    tools:targetApi="37">
+    <!--
+      Game Mode preferences. Declares to the OEM Game Mode framework (Pixel, Samsung,
+      Asus, Nothing, Xiaomi, etc.) that this app accepts PERFORMANCE and BATTERY mode
+      treatment. Local LLM inference is a heavy compute workload that benefits from
+      sustained higher GPU clocks + relaxed DCVS throttling, exactly what game-mode
+      perf delivers. Non-game opt-in — appCategory stays "productivity".
+      See res/xml/game_mode_config.xml for the rationale per attribute.
+    -->
+    <meta-data
+      android:name="android.game_mode_config"
+      android:resource="@xml/game_mode_config" />
+    <activity
+      android:name=".ui.activity.SafeModeActivity"
+      android:exported="false"
+      android:label="@string/title_activity_safe_mode"
+      android:theme="@style/Theme.Rikkahub" />
+    <activity
+      android:name=".RouteActivity"
+      android:configChanges="keyboardHidden|orientation|screenSize|uiMode|screenLayout|smallestScreenSize|density"
+      android:exported="true"
+      android:importantForAutofill="noExcludeDescendants"
+      android:theme="@style/Theme.Rikkahub"
+      android:windowSoftInputMode="adjustResize">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+      <intent-filter>
+        <action android:name="android.intent.action.SEND" />
+
+        <category android:name="android.intent.category.DEFAULT" />
+
+        <data android:mimeType="text/plain" />
+      </intent-filter>
+      <intent-filter>
+        <action android:name="android.intent.action.PROCESS_TEXT" />
+
+        <category android:name="android.intent.category.DEFAULT" />
+
+        <data android:mimeType="text/plain" />
+      </intent-filter>
+
+      <intent-filter>
+        <action android:name="me.rerere.rikkahub.action.TRANSLATE" />
+        <category android:name="android.intent.category.DEFAULT" />
+      </intent-filter>
+
+      <meta-data
+        android:name="android.app.shortcuts"
+        android:resource="@xml/shortcuts" />
+    </activity>
+    <activity
+      android:name=".ui.activity.ShortcutHandlerActivity"
+      android:exported="true"
+      android:theme="@android:style/Theme.Translucent.NoTitleBar">
+      <intent-filter>
+        <action android:name="android.intent.action.VIEW" />
+
+        <category android:name="android.intent.category.DEFAULT" />
+
+        <data
+          android:host="shortcut"
+          android:scheme="rikkahub" />
+      </intent-filter>
+    </activity>
+    <activity
+      android:name=".ui.activity.CodexOAuthRedirectActivity"
+      android:exported="true"
+      android:theme="@android:style/Theme.Translucent.NoTitleBar">
+      <intent-filter>
+        <action android:name="android.intent.action.VIEW" />
+
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.BROWSABLE" />
+
+        <data
+          android:host="codex"
+          android:path="/oauth"
+          android:scheme="rikkahub" />
+      </intent-filter>
+    </activity>
+    <activity
+      android:name=".ui.activity.GeminiOAuthRedirectActivity"
+      android:exported="true"
+      android:theme="@android:style/Theme.Translucent.NoTitleBar">
+      <intent-filter>
+        <action android:name="android.intent.action.VIEW" />
+
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.BROWSABLE" />
+
+        <data
+          android:host="gemini"
+          android:path="/oauth"
+          android:scheme="rikkahub" />
+      </intent-filter>
+    </activity>
+    <activity
+      android:name="com.yalantis.ucrop.UCropActivity"
+      android:theme="@style/Theme.AppCompat.Light.NoActionBar" />
+    <activity
+      android:name=".data.ai.tools.local.ToolHostActivity"
+      android:exported="false"
+      android:excludeFromRecents="true"
+      android:theme="@style/Theme.Rikkahub.ToolHost" />
+
+    <!-- In-app Browser Activity. Hosts the WebView the LLM drives via the browser_*
+         tools. INTERNET is already declared at the top of this manifest; nothing else
+         needed at install time. configChanges keeps the WebView alive across rotation
+         and keyboard show/hide so the AI doesn't lose its session mid-task. -->
+    <activity
+      android:name=".browser.BrowserActivity"
+      android:exported="false"
+      android:configChanges="screenSize|orientation|keyboardHidden"
+      android:hardwareAccelerated="true"
+      android:theme="@style/Theme.Rikkahub" />
+
+    <!-- Phase 13: External Automation Intent API. Exported activity that accepts
+         RUN_TASK / RUN_CHAT intents from Tasker / MacroDroid / Locale / app callers.
+         Translucent + NoTitleBar so trusted-caller fires don't flash a window. The
+         feature is OFF by default — even with the activity registered here, the
+         dispatcher rejects every call until ExternalAutomationConfig.enabled is true. -->
+    <activity
+      android:name=".automation.ExternalAutomationActivity"
+      android:exported="true"
+      android:excludeFromRecents="true"
+      android:noHistory="true"
+      android:theme="@android:style/Theme.Translucent.NoTitleBar">
+      <intent-filter>
+        <action android:name="me.rerere.rikkahub.RUN_TASK" />
+        <action android:name="me.rerere.rikkahub.RUN_CHAT" />
+        <category android:name="android.intent.category.DEFAULT" />
+      </intent-filter>
+    </activity>
+
+    <!-- ADB-shell entry point for the same RUN_TASK flow. App callers should target the
+         activity above instead — Android 14+ blocks manifest receivers from launching
+         activities in the background. Default-deny: rejects with `untrusted_caller`
+         until the user explicitly opts in via Settings. -->
+    <receiver
+      android:name=".automation.ExternalAutomationReceiver"
+      android:exported="true">
+      <intent-filter>
+        <action android:name="me.rerere.rikkahub.RUN_TASK" />
+      </intent-filter>
+    </receiver>
+
+    <service
+      android:name=".service.TelegramBotService"
+      android:exported="false"
+      android:foregroundServiceType="specialUse">
+      <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="long-running Telegram bot long-poll loop" />
+    </service>
+
+    <service
+      android:name=".service.MediaPlaybackService"
+      android:exported="false"
+      android:foregroundServiceType="mediaPlayback">
+      <intent-filter>
+        <action android:name="android.intent.action.MEDIA_BUTTON" />
+      </intent-filter>
+    </service>
+
+    <!-- Handles hardware media-button broadcasts (headset, Bluetooth) and routes them
+         to the active MediaSession via the AndroidX media-compat helper. -->
+    <receiver
+      android:name="androidx.media.session.MediaButtonReceiver"
+      android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.MEDIA_BUTTON" />
+      </intent-filter>
+    </receiver>
+
+    <service
+      android:name=".service.RikkaAccessibilityService"
+      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+      android:exported="true"
+      android:label="@string/app_name">
+      <intent-filter>
+        <action android:name="android.accessibilityservice.AccessibilityService" />
+      </intent-filter>
+      <meta-data
+        android:name="android.accessibilityservice"
+        android:resource="@xml/accessibility_service_config" />
+    </service>
+
+    <service
+      android:name=".service.RikkaNotificationListenerService"
+      android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+      android:exported="true"
+      android:label="@string/app_name">
+      <intent-filter>
+        <action android:name="android.service.notification.NotificationListenerService" />
+      </intent-filter>
+    </service>
+
+    <receiver
+      android:name=".service.CronBootReceiver"
+      android:enabled="true"
+      android:exported="true"
+      android:permission="android.permission.RECEIVE_BOOT_COMPLETED">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+        <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+      </intent-filter>
+    </receiver>
+
+    <!-- Phase 12 — geofence transition receiver. Play Services delivers via
+         PendingIntent.getBroadcast outside any active component, so this MUST be a
+         manifest receiver. Not exported — the only sender is Play Services running in
+         our process. -->
+    <receiver
+      android:name=".workflow.trigger.GeofenceTriggerReceiver"
+      android:exported="false">
+      <intent-filter>
+        <action android:name="me.rerere.rikkahub.workflow.GEOFENCE_TRANSITION" />
+      </intent-filter>
+    </receiver>
+
+    <service
+      android:name=".service.WebServerService"
+      android:exported="false"
+      android:foregroundServiceType="specialUse">
+      <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="local web server for LLM chat UI" />
+    </service>
+
+    <service
+      android:name=".service.ChatGenerationForegroundService"
+      android:exported="false"
+      android:foregroundServiceType="specialUse"
+      android:stopWithTask="false">
+      <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="interactive chat generation and tool execution" />
+    </service>
+
+    <provider
+      android:name="androidx.core.content.FileProvider"
+      android:authorities="${applicationId}.fileprovider"
+      android:exported="false"
+      android:grantUriPermissions="true">
+      <meta-data
+        android:name="android.support.FILE_PROVIDER_PATHS"
+        android:resource="@xml/file_paths" />
+    </provider>
+    <provider
+      android:name=".data.provider.WorkspaceDocumentsProvider"
+      android:authorities="${applicationId}.documents"
+      android:exported="true"
+      android:grantUriPermissions="true"
+      android:permission="android.permission.MANAGE_DOCUMENTS">
+      <intent-filter>
+        <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+      </intent-filter>
+    </provider>
+    <!-- Required by Shizuku: receives the binder handed off from the Shizuku app / service.
+         Declaration matches the library's documented setup (Shizuku-API demo manifest). -->
+    <provider
+      android:name="rikka.shizuku.ShizukuProvider"
+      android:authorities="${applicationId}.shizuku"
+      android:enabled="true"
+      android:exported="true"
+      android:multiprocess="false"
+      android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+    <provider
+      android:name="androidx.startup.InitializationProvider"
+      android:authorities="${applicationId}.androidx-startup"
+      android:exported="false"
+      tools:node="merge">
+      <meta-data
+        android:name="androidx.work.WorkManagerInitializer"
+        android:value="androidx.startup"
+        tools:node="remove" />
+    </provider>
+  </application>
+
+</manifest>

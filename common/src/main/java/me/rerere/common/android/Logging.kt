@@ -1,0 +1,105 @@
+package me.rerere.common.android
+
+import kotlinx.serialization.Serializable
+import kotlin.uuid.Uuid
+
+private const val MAX_RECENT_LOGS = 100
+
+@Serializable
+sealed class LogEntry {
+    abstract val id: Uuid
+    abstract val timestamp: Long
+    abstract val tag: String
+
+    @Serializable
+    data class TextLog(
+        override val id: Uuid = Uuid.random(),
+        override val timestamp: Long = System.currentTimeMillis(),
+        override val tag: String,
+        val message: String
+    ) : LogEntry()
+
+    @Serializable
+    data class RequestLog(
+        override val id: Uuid = Uuid.random(),
+        override val timestamp: Long = System.currentTimeMillis(),
+        override val tag: String,
+        val url: String,
+        val method: String,
+        val requestHeaders: Map<String, String> = emptyMap(),
+        val requestBody: String? = null,
+        val responseCode: Int? = null,
+        val responseHeaders: Map<String, String> = emptyMap(),
+        val durationMs: Long? = null,
+        val error: String? = null
+    ) : LogEntry()
+}
+
+object Logging {
+    private val recentLogs = arrayListOf<LogEntry>()
+    @Volatile
+    private var requestLoggingEnabled = false
+
+    // Modules below :app (e.g. :ai) have no BuildConfig of their own to gate verbose
+    // android.util.Log calls with, the way :app already gates HttpLoggingInterceptor
+    // behind BuildConfig.DEBUG. RikkaHubApp.onCreate() sets this once from
+    // BuildConfig.DEBUG so provider code can gate full request/response body logging
+    // (which otherwise carries prompts and tool results into logcat on every release
+    // build too) without a per-module build.gradle change.
+    @Volatile
+    private var debugLoggingEnabled = false
+
+    fun log(tag: String, message: String) {
+        addLog(LogEntry.TextLog(tag = tag, message = message))
+    }
+
+    fun logRequest(entry: LogEntry.RequestLog) {
+        if (!requestLoggingEnabled) return
+        addLog(entry)
+    }
+
+    fun isRequestLoggingEnabled(): Boolean = requestLoggingEnabled
+
+    fun setRequestLoggingEnabled(enabled: Boolean) {
+        requestLoggingEnabled = enabled
+    }
+
+    fun isDebugLoggingEnabled(): Boolean = debugLoggingEnabled
+
+    fun setDebugLoggingEnabled(enabled: Boolean) {
+        debugLoggingEnabled = enabled
+    }
+
+    private fun addLog(entry: LogEntry) {
+        synchronized(recentLogs) {
+            recentLogs.add(0, entry)
+            if (recentLogs.size > MAX_RECENT_LOGS) {
+                recentLogs.removeLastOrNull()
+            }
+        }
+    }
+
+    fun getRecentLogs(): List<LogEntry> {
+        synchronized(recentLogs) {
+            return recentLogs.toList()
+        }
+    }
+
+    fun getTextLogs(): List<LogEntry.TextLog> {
+        synchronized(recentLogs) {
+            return recentLogs.filterIsInstance<LogEntry.TextLog>()
+        }
+    }
+
+    fun getRequestLogs(): List<LogEntry.RequestLog> {
+        synchronized(recentLogs) {
+            return recentLogs.filterIsInstance<LogEntry.RequestLog>()
+        }
+    }
+
+    fun clear() {
+        synchronized(recentLogs) {
+            recentLogs.clear()
+        }
+    }
+}

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+   Legacy auto-backup rules (API < 31). API 31+ uses
+   `data_extraction_rules.xml` instead. Keep both in sync — adding an entry
+   here without the corresponding exclusion in the new format leaves a hole
+   on Android 12+.
+
+   Default: nothing is backed up; we explicitly include only `files/upload/`.
+   Sensitive paths (Room DBs with SSH credentials, DataStore with tokens,
+   `known_hosts`) are excluded as defense-in-depth even though the
+   include-only mode already drops them.
+-->
+<full-backup-content>
+  <include
+    domain="file"
+    path="upload/" />
+  <exclude
+    domain="database"
+    path="." />
+  <exclude
+    domain="sharedpref"
+    path="." />
+  <exclude
+    domain="file"
+    path="datastore/" />
+  <exclude
+    domain="file"
+    path="known_hosts" />
+  <!-- Pass 3: in-app browser profile. Cookies often carry auth tokens; under no
+       circumstance restore them onto a different device. -->
+  <exclude
+    domain="file"
+    path="browser-profile/" />
+  <!-- Phase 22A: on-device LLM weights. Can be 1 GB+; never back up to cloud. -->
+  <exclude
+    domain="file"
+    path="local-models/" />
+  <!-- Jieba FTS dictionary extracted from assets — fully reproducible, no user data. -->
+  <exclude
+    domain="file"
+    path="simple_dict/" />
+</full-backup-content>

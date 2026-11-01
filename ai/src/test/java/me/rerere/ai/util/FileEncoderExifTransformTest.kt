@@ -1,0 +1,95 @@
+package me.rerere.ai.util
+
+import me.rerere.ai.ui.UIMessagePart
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+class FileEncoderExifTransformTest {
+
+    @Test
+    fun `encodeBase64 with withPrefix false on a data URL should return the bare payload`() {
+        val part = UIMessagePart.Image(url = "data:image/png;base64,QUJD")
+
+        val result = part.encodeBase64(withPrefix = false).getOrThrow()
+
+        assertEquals("QUJD", result.base64)
+        assertEquals("image/png", result.mimeType)
+    }
+
+    @Test
+    fun `encodeBase64 with withPrefix true on a data URL should return the full data URI`() {
+        val part = UIMessagePart.Image(url = "data:image/png;base64,QUJD")
+
+        val result = part.encodeBase64(withPrefix = true).getOrThrow()
+
+        assertEquals("data:image/png;base64,QUJD", result.base64)
+        assertEquals("image/png", result.mimeType)
+    }
+
+    @Test
+    fun `all supported exif orientations should map to expected transform`() {
+        assertEquals(ExifTransformType.NONE, mapExifOrientationToTransform(ORIENTATION_NORMAL))
+        assertEquals(ExifTransformType.FLIP_HORIZONTAL, mapExifOrientationToTransform(ORIENTATION_FLIP_HORIZONTAL))
+        assertEquals(ExifTransformType.ROTATE_180, mapExifOrientationToTransform(ORIENTATION_ROTATE_180))
+        assertEquals(ExifTransformType.FLIP_VERTICAL, mapExifOrientationToTransform(ORIENTATION_FLIP_VERTICAL))
+        assertEquals(ExifTransformType.TRANSPOSE, mapExifOrientationToTransform(ORIENTATION_TRANSPOSE))
+        assertEquals(ExifTransformType.ROTATE_90, mapExifOrientationToTransform(ORIENTATION_ROTATE_90))
+        assertEquals(ExifTransformType.TRANSVERSE, mapExifOrientationToTransform(ORIENTATION_TRANSVERSE))
+        assertEquals(ExifTransformType.ROTATE_270, mapExifOrientationToTransform(ORIENTATION_ROTATE_270))
+    }
+
+    @Test
+    fun `undefined or unknown orientation should map to none`() {
+        assertEquals(ExifTransformType.NONE, mapExifOrientationToTransform(ORIENTATION_UNDEFINED))
+        assertEquals(ExifTransformType.NONE, mapExifOrientationToTransform(999))
+        assertEquals(ExifTransformType.NONE, mapExifOrientationToTransform(-1))
+    }
+
+    @Test
+    fun `long screenshots should keep original resolution when under pixel budget`() {
+        val sampleSize = calculateImageInSampleSize(
+            width = 1272,
+            height = 2800,
+            maxDimension = 10_000,
+            maxPixels = 16_000_000L
+        )
+
+        assertEquals(1, sampleSize)
+    }
+
+    @Test
+    fun `very large images should still be downsampled by pixel budget`() {
+        val sampleSize = calculateImageInSampleSize(
+            width = 5000,
+            height = 5000,
+            maxDimension = 10_000,
+            maxPixels = 16_000_000L
+        )
+
+        assertEquals(2, sampleSize)
+    }
+
+    @Test
+    fun `extremely long images should still be downsampled by max dimension`() {
+        val sampleSize = calculateImageInSampleSize(
+            width = 1200,
+            height = 20_000,
+            maxDimension = 10_000,
+            maxPixels = 16_000_000L
+        )
+
+        assertEquals(2, sampleSize)
+    }
+
+    companion object {
+        private const val ORIENTATION_UNDEFINED = 0
+        private const val ORIENTATION_NORMAL = 1
+        private const val ORIENTATION_FLIP_HORIZONTAL = 2
+        private const val ORIENTATION_ROTATE_180 = 3
+        private const val ORIENTATION_FLIP_VERTICAL = 4
+        private const val ORIENTATION_TRANSPOSE = 5
+        private const val ORIENTATION_ROTATE_90 = 6
+        private const val ORIENTATION_TRANSVERSE = 7
+        private const val ORIENTATION_ROTATE_270 = 8
+    }
+}

@@ -1,0 +1,166 @@
+package me.rerere.rikkahub.web
+
+import android.content.Context
+import android.util.Log
+import io.ktor.server.cio.CIOApplicationEngine
+import io.ktor.server.engine.EmbeddedServer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import me.rerere.rikkahub.AppScope
+import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.rikkahub.data.repository.FolderRepository
+import me.rerere.rikkahub.service.ChatService
+import me.rerere.rikkahub.web.startWebServer
+import java.net.ServerSocket
+
+private const val TAG = "WebServerManager"
+private const val HOST_ALL_INTERFACES = "0.0.0.0"
+private const val HOST_LOOPBACK = "127.0.0.1"
+
+data class WebServerState(
+    val isRunning: Boolean = false,
+    val isLoading: Boolean = false,
+    val port: Int = 8080,
+    val serviceName: String = DEFAULT_SERVICE_NAME,
+    val localhostOnly: Boolean = false,
+    val hostname: String? = null,
+    val address: String? = null,
+    val error: String? = null,
+    // Identifies which start() attempt produced this state. StateFlow only keeps the
+    // latest value, so a collector sharing a dispatcher with the writer can miss an
+    // intermediate emission entirely (see WebServerService.shouldStopOnError); comparing
+    // this id against the one seen at subscribe time still detects a genuinely new
+    // attempt even when that happens.
+    val startId: Long = 0
+)
+
+class WebServerManager(
+    private val context: Context,
+    private val appScope: AppScope,
+    private val chatService: ChatService,
+    private val conversationRepo: ConversationRepository,
+    private val folderRepo: FolderRepository,
+    private val settingsStore: SettingsStore,
+    private val filesManager: FilesManager
+) {
+    private var server: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
+    private val nsdRegistrar = NsdServiceRegistrar(context)
+
+    private val _state = MutableStateFlow(WebServerState())
+    val state: StateFlow<WebServerState> = _state.asStateFlow()
+
+    private var nextStartId = 0L
+
+    fun start(
+        port: Int = 8080,
+        serviceName: String = DEFAULT_SERVICE_NAME,
+        localhostOnly: Boolean = false
+    ) {
+        if (server != null) {
+            Log.w(TAG, "Server already running")
+            return
+        }
+
+        // Assigned synchronously (before the async body below runs) so a caller that reads
+        // state.value.startId right before calling start() gets a baseline that's guaranteed
+        // to differ from every state this attempt writes, regardless of coroutine scheduling.
+        val startId = ++nextStartId
+
+        appScope.launch {
+            // 仅本机模式绑定回环地址
+            val host = if (localhostOnly) HOST_LOOPBACK else HOST_ALL_INTERFACES
+            val baseState = WebServerState(
+                port = port,
+                serviceName = serviceName,
+                localhostOnly = localhostOnly,
+                startId = startId
+            )
+            try {
+                _state.value = _state.value.copy(isLoading = true, startId = startId)
+                Log.i(TAG, "Starting web server on $host:$port")
+                if (!isPortAvailable(port)) {
+                    Log.w(TAG, "Port $port is already in use")
+                    _state.value = baseState.copy(error = "Port $port is already in use")
+                    return@launch
+                }
+                server = startWebServer(port = port, host = host) {
+                    configureWebApi(context, chatService, conversationRepo, folderRepo, settingsStore, filesManager)
+                }.start(wait = false)
+
+                _state.value = baseState.copy(isRunning = true)
+                // 仅局域网模式注册 mDNS
+                if (!localhostOnly) {
+                    runCatching {
+                        nsdRegistrar.register(
+                            port = port,
+                            serviceName = serviceName,
+                            onRegistered = { info ->
+                                _state.value = _state.value.copy(
+                                    serviceName = info.serviceName,
+                                    hostname = info.hostname,
+                                    address = info.address.hostAddress
+                                )
+                            }
+                        )
+                    }.onFailure {
+                        Log.w(TAG, "NSD register failed", it)
+                    }
+                }
+                Log.i(TAG, "Web server started successfully on $host:$port")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start web server", e)
+                _state.value = baseState.copy(error = e.message)
+            }
+        }
+    }
+
+    fun reportError(message: String) {
+        _state.value = _state.value.copy(isRunning = false, isLoading = false, error = message)
+    }
+
+    fun stop() {
+        _state.value =
+            _state.value.copy(isRunning = false, isLoading = true, hostname = null, address = null, error = null)
+        appScope.launch {
+            try {
+                Log.i(TAG, "Stopping web server")
+                server?.stop(1000, 2000)
+                server = null
+                runCatching {
+                    nsdRegistrar.unregister()
+                }.onFailure {
+                    Log.w(TAG, "NSD unregister failed", it)
+                }
+                _state.value = _state.value.copy(isLoading = false)
+                Log.i(TAG, "Web server stopped")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to stop web server", e)
+                _state.value = _state.value.copy(isLoading = false, error = e.message)
+            }
+        }
+    }
+
+    fun restart(
+        port: Int = _state.value.port,
+        serviceName: String = _state.value.serviceName,
+        localhostOnly: Boolean = _state.value.localhostOnly
+    ) {
+        stop()
+        start(port, serviceName, localhostOnly)
+    }
+
+    private fun isPortAvailable(port: Int): Boolean {
+        return try {
+            ServerSocket(port).use { true }
+        } catch (e: Exception) {
+            false
+        }
+    }
+}

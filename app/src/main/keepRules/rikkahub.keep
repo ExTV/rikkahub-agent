@@ -1,0 +1,122 @@
+# Keep source locations so release stack traces stay readable.
+-keepattributes SourceFile,LineNumberTable
+
+# This build ships no crash reporter, so there is no mapping file to retrace
+# with. Obfuscated frames in a user-pasted stack trace would be unreadable,
+# and the reflective surfaces below are wide. Keep names intact.
+-dontobfuscate
+
+# Ktor references JVM-only management APIs from its debug detector.
+-dontwarn java.lang.management.ManagementFactory
+-dontwarn java.lang.management.RuntimeMXBean
+
+# Jackson references these JVM-only java.beans annotations.
+-dontwarn java.beans.ConstructorProperties
+-dontwarn java.beans.Transient
+
+# re2j has optional references that are unavailable on Android.
+-dontwarn com.google.re2j.**
+
+# Serialized settings and conversations are persisted as JSON, so keep the
+# members the generated serializers read and write.
+-keep @kotlinx.serialization.Serializable class * {*;}
+
+# auth0/jackson: TypeReference subclasses rely on runtime generic signatures.
+# R8 strips Signature/InnerClasses/EnclosingMethod by default, and its class
+# merging/inlining optimizations can destroy the anonymous class hierarchy that
+# TypeReference.<init> depends on via getClass().getGenericSuperclass(). The
+# Codex OAuth path decodes JWTs through both libraries.
+-keepattributes Signature, InnerClasses, EnclosingMethod
+-keep class com.fasterxml.jackson.** { *; }
+-keep class com.auth0.jwt.** { *; }
+
+# JLaTeXMath loads alphabet registrations and font descriptors by binary name.
+-keep class org.scilab.forge.jlatexmath.** {*;}
+
+# JSch: SSH client loads crypto providers (com.jcraft.jsch.jce.*) reflectively
+# from a static init table, so R8 can't see the dependency at compile time and
+# strips them; release builds then crash with ClassNotFoundException on the
+# first ssh_exec. Keep the whole package; it's small.
+-keep class com.jcraft.jsch.** { *; }
+
+# JSch ships optional integrations that reference desktop/JVM-only packages
+# never present on Android: Pageant (Windows SSH agent, JNA + win32), the
+# Log4j2 logger backend, Kerberos GSS-API, and junixsocket Unix domain sockets.
+# Our SSH tool path uses password/keyfile auth over TCP, so none of these are
+# reachable at runtime. Tell R8 not to fail the build over the missing refs.
+-dontwarn com.sun.jna.**
+-dontwarn org.apache.logging.log4j.**
+-dontwarn org.ietf.jgss.**
+-dontwarn org.newsclub.net.unix.**
+
+# LiteRT-LM (com.google.ai.edge.litertlm:litertlm-android): the native side does
+# JNI GetMethodID lookups by name against the Kotlin SamplerConfig / Conversation
+# / Engine / etc. classes to read their fields. R8 strips/renames those methods
+# on release, JNI gets a null jmethodID, and the next CallIntMethodV aborts the
+# process with "JNI DETECTED ERROR IN APPLICATION: mid == null" the first time
+# the user sends a message to a local LiteRT model. Keep the whole package; the
+# Google AI Edge SDK is small and the cost is negligible vs. the crash.
+-keep class com.google.ai.edge.litertlm.** { *; }
+-keep class com.google.ai.edge.litert.** { *; }
+
+# requery sqlite-android (forked as com.github.rikkahub:sqlite-android, used for the
+# FTS-enabled SQLite that backs message search). Same shape as JSch + LiteRT-LM:
+# the native SQLite shim does GetMethodID lookups by name on
+# io.requery.android.database.*. JitPack-built AARs can ship inconsistent
+# consumer-rules; explicit keeps make the next FTS query / DB open survive R8.
+# Plus: DatabaseUtil.kt reflects on CursorWindow.sDefaultCursorWindowSize at startup
+# to set the 32MB cursor window, and R8 renaming that field would silently break it.
+-keep class io.requery.android.database.** { *; }
+-keepclasseswithmembers class io.requery.android.database.** {
+    native <methods>;
+}
+-keepclassmembers class io.requery.android.database.CursorWindow {
+    static int sDefaultCursorWindowSize;
+}
+
+# llama.cpp streaming: llama_jni.cpp's nativeGenerate resolves its streaming callback by
+# name at runtime, via GetObjectClass + GetMethodID(sinkCls, "onToken", "([B)Z"), because JNI
+# has no static view of a Kotlin TokenSink implementor's shape. R8 can't see that call, so on
+# release it inlines LlamaCppJni's delegating wrapper methods, strips the TokenSink interface
+# off the class that implements it, and horizontally merges the anonymous implementor created
+# inside LlamaCppJni.generate into LlamaCppJni's own singleton, which never had an onToken
+# method. GetMethodID then returns null and the process crashes with "no non-static method
+# Lme/rerere/llamacpp/RealLlamaCppNative;.onToken([B)Z" the first time a local GGUF model
+# streams a token. -dontobfuscate above does not help here: nothing is renamed, this is R8's
+# optimizer (inlining, class merging, member removal) erasing the method outright, so only a
+# -keep closes it. Keep the whole JNI-facing surface: LlamaCppJni itself and its native
+# methods, the TokenSink interface, and every class implementing it.
+-keep class me.rerere.llamacpp.LlamaCppJni { *; }
+-keepclasseswithmembers class me.rerere.llamacpp.LlamaCppJni {
+    native <methods>;
+}
+-keep interface me.rerere.llamacpp.LlamaCppJni$TokenSink { *; }
+-keep class * implements me.rerere.llamacpp.LlamaCppJni$TokenSink { *; }
+
+# SLF4J 2.x service-loader binding. Without these rules the ServiceLoader<SLF4JServiceProvider>
+# lookup can return empty in release (R8 keeps the META-INF/services file but the implementing
+# class itself gets stripped); Ktor / jmDNS / cron-utils logs then disappear, making future
+# bug reports much harder. Cheap insurance.
+-keep class * implements org.slf4j.spi.SLF4JServiceProvider
+-keepclassmembers class * implements org.slf4j.spi.SLF4JServiceProvider { <init>(); }
+-keep class uk.uuid.slf4j.android.** { *; }
+
+# QR/barcode scanning: Quickie (io.github.g00fy2.quickie:quickie-bundled) wraps CameraX + the
+# BUNDLED Google ML Kit barcode model (com.google.mlkit:barcode-scanning). Even with
+# -dontobfuscate, R8's optimization horizontally-merges BarcodeScanning.getClient() into an
+# unrelated class and mangles ML Kit's internal component registration, so getClient() hands back
+# a scanner whose internal dependency is null, and a NullPointerException follows the instant a
+# camera frame is decoded (issue #13, release-only: camera opens, decode throws). Keep the whole
+# ML Kit + bundled model + Quickie surface so R8 leaves the scanner wiring intact.
+-keep class com.google.mlkit.** { *; }
+-keep class com.google.android.gms.internal.mlkit_vision_barcode.** { *; }
+-keep class com.google.android.gms.internal.mlkit_vision_barcode_bundled.** { *; }
+-keep class io.github.g00fy2.quickie.** { *; }
+-dontwarn com.google.mlkit.**
+
+# Shizuku (shizuku_exec): ShizukuUserService's no-arg constructor is called reflectively by
+# Shizuku's server in the process it spawns for the service, not by any code of ours R8 can
+# see. Without this rule R8 can strip the constructor on release and the bind fails.
+-keepclassmembers class me.rerere.rikkahub.shizuku.ShizukuUserService {
+    public <init>(...);
+}

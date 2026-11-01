@@ -1,0 +1,157 @@
+package me.rerere.workspace
+
+import java.io.File
+import java.io.IOException
+import java.io.InputStream
+import java.util.concurrent.TimeUnit
+
+interface WorkspaceShellRunner {
+    fun execute(context: WorkspaceShellContext): WorkspaceCommandResult
+
+    /**
+     * Launch [context.command] as a live process for background use. The returned
+     * Process is NOT waited on and NOT timed out; the caller owns draining and
+     * lifecycle. [context.timeoutMillis] and [context.stdin] are ignored.
+     * Throws IllegalStateException on setup failure (rootfs / proot / loader missing).
+     */
+    fun start(context: WorkspaceShellContext): Process
+}
+
+data class WorkspaceShellContext(
+    val root: String,
+    val command: String,
+    val cwd: String,
+    val filesDir: File,
+    val linuxDir: File,
+    val tempDir: File,
+    val workingDir: File,
+    val timeoutMillis: Long,
+    val stdin: ByteArray? = null,
+    val bindMounts: List<WorkspaceBindMount> = emptyList(),
+    val shellCompatibilityMode: Boolean = false,
+)
+
+class HostShellRunner : WorkspaceShellRunner {
+    override fun execute(context: WorkspaceShellContext): WorkspaceCommandResult {
+        val process = newProcessBuilder(context).start()
+        return process.readResult(context.timeoutMillis, context.stdin)
+    }
+
+    override fun start(context: WorkspaceShellContext): Process =
+        newProcessBuilder(context).start()
+
+    private fun newProcessBuilder(context: WorkspaceShellContext): ProcessBuilder =
+        ProcessBuilder(defaultShell(), "-c", context.command)
+            .directory(context.workingDir)
+            .redirectErrorStream(false)
+
+    private fun defaultShell(): String =
+        if (File("/system/bin/sh").exists()) "/system/bin/sh" else "/bin/sh"
+}
+
+// 单个流保留的最大字符数, 防止命令疯狂输出导致 OOM 或撑爆 LLM 上下文
+const val MAX_OUTPUT_CHARS = 128 * 1024
+
+fun Process.readResult(timeoutMillis: Long, stdin: ByteArray? = null): WorkspaceCommandResult {
+    val stdout = StreamCollector(inputStream)
+    val stderr = StreamCollector(errorStream)
+    val stdinWriter = stdin?.let { bytes -> StreamWriter(outputStream, bytes) }
+    if (stdinWriter == null) {
+        // 没有 stdin 输入时立即关闭管道, 让子进程读到 EOF;
+        // 否则 cat/gh/kubectl 等按 isatty 判断的工具会把这根永不写入的管道当成待输入流而永久阻塞
+        try {
+            outputStream.close()
+        } catch (_: IOException) {
+            // 子进程已提前退出导致管道关闭, 忽略
+        }
+    }
+    try {
+        val finished = waitFor(timeoutMillis, TimeUnit.MILLISECONDS)
+        if (!finished) {
+            destroyForcibly()
+        }
+        stdinWriter?.join(1_000)
+        stdout.join(1_000)
+        stderr.join(1_000)
+        return WorkspaceCommandResult(
+            exitCode = if (finished) exitValue() else -1,
+            stdout = stdout.text(),
+            stderr = stderr.text(),
+            timedOut = !finished,
+            truncated = stdout.truncated || stderr.truncated,
+        )
+    } catch (e: InterruptedException) {
+        // 调用方线程被中断（如协程取消时的 runInterruptible），杀掉进程避免命令继续执行
+        destroyForcibly()
+        // 进程被杀后 stdout/stderr 会关闭, 这里 join 回收两个采集线程, 避免每次取消泄漏一对线程
+        stdinWriter?.join(1_000)
+        stdout.join(1_000)
+        stderr.join(1_000)
+        throw e
+    }
+}
+
+private class StreamWriter(
+    private val stream: java.io.OutputStream,
+    private val bytes: ByteArray,
+) {
+    private val thread = Thread {
+        try {
+            stream.use { output ->
+                output.write(bytes)
+                output.flush()
+            }
+        } catch (_: IOException) {
+            // 子进程提前退出或被强杀时 stdin 可能关闭, 忽略即可, 退出状态会由进程本身返回
+        }
+    }.apply {
+        isDaemon = true
+        start()
+    }
+
+    fun join(millis: Long) = thread.join(millis)
+}
+
+private class StreamCollector(
+    stream: InputStream,
+    private val maxChars: Int = MAX_OUTPUT_CHARS,
+) {
+    private val builder = StringBuilder()
+
+    @Volatile
+    var truncated = false
+        private set
+
+    private val thread = Thread {
+        try {
+            stream.bufferedReader().use { reader ->
+                val buffer = CharArray(4096)
+                while (true) {
+                    val read = reader.read(buffer)
+                    if (read < 0) break
+                    // 超出上限后继续读到 EOF 并丢弃，否则管道写满会阻塞子进程导致其无法退出
+                    synchronized(builder) {
+                        val remaining = maxChars - builder.length
+                        if (remaining > 0) {
+                            builder.append(buffer, 0, minOf(read, remaining))
+                        }
+                        if (read > remaining) {
+                            truncated = true
+                        }
+                    }
+                }
+            }
+        } catch (_: IOException) {
+            // 进程被强杀（超时/取消）时流会被关闭，阻塞中的 read 会抛 InterruptedIOException 等，
+            // 保留已读取的内容即可；不能让异常逃逸，否则会触发线程默认异常处理导致应用崩溃
+        }
+    }.apply {
+        // 设为 daemon: 即使 proot grandchild 残留 fd 导致 read() 永久阻塞, 也不会阻止 JVM 退出
+        isDaemon = true
+        start()
+    }
+
+    fun join(millis: Long) = thread.join(millis)
+
+    fun text(): String = synchronized(builder) { builder.toString() }
+}
