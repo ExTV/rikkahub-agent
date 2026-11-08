@@ -45,6 +45,7 @@ suspend fun createWorkspaceTools(
     workspaceId: String?,
     workspaceRepository: WorkspaceRepository,
     cwd: String? = null,
+    invocationContext: ToolInvocationContext? = null,
 ): List<Tool> {
     if (workspaceId.isNullOrBlank()) return emptyList()
     val approvalOverrides = workspaceRepository.getById(workspaceId)?.toolApprovalOverrides().orEmpty()
@@ -59,7 +60,7 @@ suspend fun createWorkspaceTools(
         createCreateFolderTool(workspaceId, ::needsApproval, workspaceRepository),
         createReadFolderTool(workspaceId, ::needsApproval, workspaceRepository),
         createShellTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd),
-        createRunBackgroundTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd),
+        createRunBackgroundTool(workspaceId, ::needsApproval, workspaceRepository, shellCwd, invocationContext),
         createBackgroundStatusTool(workspaceId, ::needsApproval, workspaceRepository),
         createBackgroundKillTool(workspaceId, ::needsApproval, workspaceRepository),
     )
@@ -341,6 +342,7 @@ private fun createRunBackgroundTool(
     needsApproval: (String) -> Boolean,
     workspaceRepository: WorkspaceRepository,
     defaultCwd: String? = null,
+    invocationContext: ToolInvocationContext? = null,
 ) = Tool(
     name = "workspace_run_background",
     description = buildString {
@@ -372,6 +374,14 @@ private fun createRunBackgroundTool(
                         }
                     )
                 })
+                put("mode", buildJsonObject {
+                    put("type", "string")
+                    put("enum", buildJsonArray {
+                        add(JsonPrimitive("job"))
+                        add(JsonPrimitive("service"))
+                    })
+                    put("description", "Task execution mode: 'job' (default batch task that automatically posts completion back to the chat) or 'service' (persistent daemon, only notifies on failure/crash)")
+                })
             },
             required = listOf("command"),
         )
@@ -382,13 +392,22 @@ private fun createRunBackgroundTool(
         val command = params.string("command") ?: error("command is required")
         val cwd = (params.string("cwd") ?: defaultCwd.orEmpty())
             .removePrefix("/workspace/").removePrefix("/workspace")
-        val status = workspaceRepository.startBackground(workspaceId, command, cwd)
+        val mode = params.string("mode")?.lowercase()?.takeIf { m -> m == "service" } ?: "job"
+        val callerConvId = invocationContext?.callerConversationId
+        val status = workspaceRepository.startBackground(
+            id = workspaceId,
+            command = command,
+            cwd = cwd,
+            mode = mode,
+            conversationId = callerConvId,
+        )
         listOf(
             UIMessagePart.Text(
                 buildJsonObject {
                     put("id", status.id)
                     put("status", "running")
                     put("command", status.command)
+                    put("mode", mode)
                 }.toString()
             )
         )

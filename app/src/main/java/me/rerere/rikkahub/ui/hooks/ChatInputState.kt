@@ -6,8 +6,16 @@ import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.vector.ImageVector
 import me.rerere.ai.ui.UIMessagePart
 import kotlin.uuid.Uuid
+
+data class ActionPill(
+    val id: String,
+    val label: String,
+    val icon: ImageVector,
+    val isSkill: Boolean = false,
+)
 
 class ChatInputState {
     val textContent = TextFieldState()
@@ -16,12 +24,35 @@ class ChatInputState {
     private var editingParts: List<UIMessagePart>? = null
     private var editingAttachmentUrls: Set<String> = emptySet()
 
+    var actionPill by mutableStateOf<ActionPill?>(null)
+    var skillPills by mutableStateOf<List<ActionPill>>(emptyList())
+
+    fun setAction(id: String, label: String, icon: ImageVector) {
+        actionPill = ActionPill(id, label, icon, false)
+    }
+
+    fun removeAction() {
+        actionPill = null
+    }
+
+    fun addSkill(name: String, icon: ImageVector) {
+        if (skillPills.none { it.id == name }) {
+            skillPills = skillPills + ActionPill(id = name, label = name, icon = icon, isSkill = true)
+        }
+    }
+
+    fun removeSkill(name: String) {
+        skillPills = skillPills.filter { it.id != name }
+    }
+
     fun clearInput() {
         textContent.setTextAndPlaceCursorAtEnd("")
         messageContent = emptyList()
         editingMessage = null
         editingParts = null
         editingAttachmentUrls = emptySet()
+        actionPill = null
+        skillPills = emptyList()
     }
 
     fun isEditing() = editingMessage != null
@@ -48,7 +79,34 @@ class ChatInputState {
     }
 
     fun getContents(): List<UIMessagePart> {
-        val text = textContent.text.toString()
+        val rawText = textContent.text.toString().trim()
+        val formattedText = buildString {
+            actionPill?.let { pill ->
+                when (pill.id) {
+                    "goal" -> append("[Goal Loop]: ")
+                    "grill-me" -> append("[Grill-Me Plan Alignment]: ")
+                    "teamwork" -> append("[Teamwork Multi-Agent]: ")
+                    "learn" -> append("[Reflection & Learn]: ")
+                    "compact" -> append("/compact ")
+                    "plan" -> append("/plan ")
+                    "build" -> append("/build ")
+                    "imagine" -> append("/imagine ")
+                    else -> append("[Action: ${pill.label}] ")
+                }
+            }
+            if (rawText.isNotBlank()) {
+                append(rawText)
+            }
+            if (skillPills.isNotEmpty()) {
+                if (isNotEmpty()) append("\n\n")
+                append("[Active Skills: ")
+                append(skillPills.joinToString(", ") { it.label })
+                append("]")
+            }
+        }
+
+        val text = formattedText.trim()
+
         if (isEditing()) {
             val originalParts = editingParts
             if (originalParts != null) {
@@ -81,7 +139,6 @@ class ChatInputState {
                 if (editedTextIndex < 0 && text.isNotBlank()) {
                     merged.add(0, UIMessagePart.Text(text))
                 }
-                // Newly added attachments are appended in insertion order.
                 merged.addAll(remainingAttachments)
                 return merged
             }
@@ -91,7 +148,7 @@ class ChatInputState {
     }
 
     fun isEmpty(): Boolean {
-        return textContent.text.isBlank() && messageContent.isEmpty()
+        return textContent.text.isBlank() && messageContent.isEmpty() && actionPill == null && skillPills.isEmpty()
     }
 
     fun addImages(uris: List<Uri>) {

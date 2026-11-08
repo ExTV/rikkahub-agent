@@ -296,11 +296,13 @@ private fun ChatPageContent(
         setting.getCurrentChatModel()?.findProvider(setting.providers) is ProviderSetting.Google
 
     val agentMode by ConversationAgentMode.getFlow(conversation.id).collectAsStateWithLifecycle()
+    val skillManager = org.koin.compose.koinInject<me.rerere.rikkahub.data.files.SkillManager>()
     val completionProviders = remember(assistant.workspaceId, conversation.workspaceCwd, workspaceRepository, agentMode) {
         buildList {
             add(
                 SlashCommandCompletionProvider(
-                    currentMode = { ConversationAgentMode.get(conversation.id) }
+                    currentMode = { ConversationAgentMode.get(conversation.id) },
+                    skillManager = skillManager,
                 )
             )
             assistant.workspaceId?.let { workspaceId ->

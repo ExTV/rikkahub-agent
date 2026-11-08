@@ -190,6 +190,28 @@ class WorkspaceDetailVM(
         }
     }
 
+    fun exportWorkspaceArchive(outputStream: OutputStream) {
+        viewModelScope.launch {
+            runCatching {
+                repository.exportWorkspaceArchive(id, outputStream)
+            }.onFailure { error ->
+                _state.update { it.copy(error = error.message ?: "Failed to export workspace archive") }
+            }
+        }
+    }
+
+    fun importWorkspaceArchive(inputStream: InputStream) {
+        viewModelScope.launch {
+            runCatching {
+                repository.importWorkspaceArchive(id, inputStream)
+            }.onSuccess {
+                refresh()
+            }.onFailure { error ->
+                _state.update { it.copy(error = error.message ?: "Failed to import workspace archive") }
+            }
+        }
+    }
+
     suspend fun resolveImageFile(
         entry: WorkspaceFileEntry,
         area: WorkspaceStorageArea,

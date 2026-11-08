@@ -309,6 +309,17 @@ private fun SettingProviderConfigPage(
             }
         )
 
+        val is9Router = remember(internalProvider) {
+            internalProvider.name.contains("9router", ignoreCase = true) ||
+                (internalProvider is ProviderSetting.OpenAI && internalProvider.baseUrl.contains("20128"))
+        }
+        if (is9Router) {
+            me.rerere.rikkahub.ui.pages.setting.components.NineRouterStationCard(
+                provider = internalProvider,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
         if (internalProvider is ProviderSetting.OpenAI) {
             SettingProviderBalanceOption(
                 provider = internalProvider,

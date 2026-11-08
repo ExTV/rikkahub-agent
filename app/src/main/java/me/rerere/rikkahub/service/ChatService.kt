@@ -556,6 +556,49 @@ class ChatService(
 
     init {
         ProcessLifecycleOwner.get().lifecycle.addObserver(lifecycleObserver)
+        workspaceRepository.setBackgroundExitNotifier { status, mode, convIdString ->
+            val convId = runCatching {
+                convIdString?.takeIf { it.isNotBlank() }?.let { Uuid.parse(it) }
+            }.getOrNull() ?: return@setBackgroundExitNotifier
+
+            if (mode == "service" && (status.exitCode == 0 || status.exitCode == null)) {
+                return@setBackgroundExitNotifier
+            }
+
+            val durationSec = (System.currentTimeMillis() - status.startedAtMillis) / 1000
+            val durationFormatted = "${durationSec / 60}m ${durationSec % 60}s"
+            val outputPreview = if (status.stderr.isNotBlank()) {
+                status.stderr.trim().takeLast(1000)
+            } else {
+                status.stdout.trim().takeLast(1000)
+            }
+
+            val messageText = if (mode == "service") {
+                """
+                [Background Service ${status.id} Crashed — Exit ${status.exitCode}]
+                Command: ${status.command}
+                Duration: $durationFormatted
+                Error Output:
+                $outputPreview
+                """.trimIndent()
+            } else {
+                """
+                [Background Job ${status.id} Finished — Exit ${status.exitCode ?: 0}]
+                Command: ${status.command}
+                Duration: $durationFormatted
+                Output:
+                $outputPreview
+                """.trimIndent()
+            }
+
+            appScope.launch(Dispatchers.Main) {
+                sendMessage(
+                    conversationId = convId,
+                    content = listOf(UIMessagePart.Text(messageText)),
+                    answer = true
+                )
+            }
+        }
     }
 
     fun cleanup() = runCatching {
@@ -1461,7 +1504,7 @@ class ChatService(
             modelCanSeeImages = Modality.IMAGE in model.inputModalities,
         )
         addAll(localTools.getTools(assistant.localTools, invocationCtx))
-        addAll(createWorkspaceToolsIfReady(assistant.workspaceId?.toString(), conversation.workspaceCwd))
+        addAll(createWorkspaceToolsIfReady(assistant.workspaceId?.toString(), conversation.workspaceCwd, invocationCtx))
         if (assistant.enabledSkills.isNotEmpty()) {
             addAll(
                 createSkillTools(
@@ -1760,7 +1803,7 @@ class ChatService(
                         modelCanSeeImages = Modality.IMAGE in model.inputModalities,
                     )
                     addAll(localTools.getTools(assistant.localTools, invocationCtx))
-                    addAll(createWorkspaceToolsIfReady(assistant.workspaceId?.toString(), conversation.workspaceCwd))
+                    addAll(createWorkspaceToolsIfReady(assistant.workspaceId?.toString(), conversation.workspaceCwd, invocationCtx))
                     if (assistant.enabledSkills.isNotEmpty()) {
                         addAll(
                             createSkillTools(
@@ -2036,7 +2079,11 @@ class ChatService(
         }
     }
 
-    private suspend fun createWorkspaceToolsIfReady(workspaceId: String?, cwd: String? = null): List<Tool> {
+    private suspend fun createWorkspaceToolsIfReady(
+        workspaceId: String?,
+        cwd: String? = null,
+        invocationContext: me.rerere.rikkahub.data.ai.tools.ToolInvocationContext? = null,
+    ): List<Tool> {
         if (workspaceId.isNullOrBlank()) return emptyList()
         val workspace = workspaceRepository.getById(workspaceId) ?: return emptyList()
         if (workspace.shellStatus != WorkspaceShellStatus.READY.name) {
@@ -2046,7 +2093,7 @@ class ChatService(
             )
             return emptyList()
         }
-        return createWorkspaceTools(workspaceId, workspaceRepository, cwd)
+        return createWorkspaceTools(workspaceId, workspaceRepository, cwd, invocationContext)
     }
 
     // ---- 检查无效消息 ----

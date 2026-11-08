@@ -320,10 +320,18 @@ class WorkspaceRepository(
         }
     }
 
+    private var bgExitNotifier: ((status: BackgroundStatus, mode: String, conversationId: String?) -> Unit)? = null
+
+    fun setBackgroundExitNotifier(notifier: (status: BackgroundStatus, mode: String, conversationId: String?) -> Unit) {
+        bgExitNotifier = notifier
+    }
+
     suspend fun startBackground(
         id: String,
         command: String,
         cwd: String = "",
+        mode: String = "job",
+        conversationId: String? = null,
     ): BackgroundStatus {
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
         // 与 executeCommand 用 runInterruptible 相反: 那里取消即意味着杀掉前台进程, 这里
@@ -333,7 +341,15 @@ class WorkspaceRepository(
         // 不可被取消、结果不会被丢弃；Dispatchers.IO 仍然只是把阻塞的进程启动挪到后台线程。
         return withContext(NonCancellable + Dispatchers.IO) {
             manager.ensureWorkspace(workspace.root)
-            manager.startBackground(workspace.root, command, cwd)
+            manager.startBackground(
+                root = workspace.root,
+                command = command,
+                cwd = cwd,
+                mode = mode,
+                onExit = { status, jobMode ->
+                    bgExitNotifier?.invoke(status, jobMode, conversationId)
+                }
+            )
         }
     }
 
@@ -355,6 +371,42 @@ class WorkspaceRepository(
         val workspace = dao.getById(id) ?: error("Workspace not found: $id")
         return withContext(Dispatchers.IO) {
             manager.killBackground(workspace.root, taskId)
+        }
+    }
+
+    suspend fun exportWorkspaceArchive(id: String, outputStream: java.io.OutputStream) {
+        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        withContext(Dispatchers.IO) {
+            val tarFile = java.io.File("/tmp", "workspace_export_${workspace.root}.tar.gz")
+            try {
+                manager.executeCommand(
+                    root = workspace.root,
+                    command = "tar -czf ${tarFile.absolutePath} -C /workspace .",
+                    timeoutMillis = 180_000L,
+                )
+                if (tarFile.exists()) {
+                    tarFile.inputStream().use { it.copyTo(outputStream) }
+                }
+            } finally {
+                tarFile.delete()
+            }
+        }
+    }
+
+    suspend fun importWorkspaceArchive(id: String, inputStream: java.io.InputStream) {
+        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        withContext(Dispatchers.IO) {
+            val tarFile = java.io.File("/tmp", "workspace_import_${workspace.root}.tar.gz")
+            try {
+                tarFile.outputStream().use { inputStream.copyTo(it) }
+                manager.executeCommand(
+                    root = workspace.root,
+                    command = "tar -xzf ${tarFile.absolutePath} -C /workspace",
+                    timeoutMillis = 180_000L,
+                )
+            } finally {
+                tarFile.delete()
+            }
         }
     }
 

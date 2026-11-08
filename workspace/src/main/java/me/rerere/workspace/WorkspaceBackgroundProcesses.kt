@@ -55,6 +55,7 @@ data class BackgroundStatus(
     val stderr: String,
     val droppedStdout: Long,
     val droppedStderr: Long,
+    val mode: String = "job",
 )
 
 /**
@@ -75,7 +76,14 @@ class WorkspaceBackgroundProcesses(
      * has [MAX_BG_PROCESSES] running processes, in which case [process] is killed
      * before the exception is thrown.
      */
-    fun start(root: String, process: Process, command: String, cwd: String): BackgroundStatus {
+    fun start(
+        root: String,
+        process: Process,
+        command: String,
+        cwd: String,
+        mode: String = "job",
+        onExit: ((status: BackgroundStatus, mode: String) -> Unit)? = null,
+    ): BackgroundStatus {
         synchronized(entries) {
             val runningForRoot = entries.values.count { it.root == root && it.process.isAlive }
             if (runningForRoot >= MAX_BG_PROCESSES) {
@@ -92,10 +100,27 @@ class WorkspaceBackgroundProcesses(
                 process = process,
                 command = command,
                 cwd = cwd,
+                mode = mode,
                 startedAtMillis = nowMillis(),
             )
             entries[id] = entry
             evictOldestExited(root)
+
+            // Reactive exit listener: wait for process termination on a daemon thread
+            Thread {
+                try {
+                    process.waitFor()
+                } catch (_: InterruptedException) {
+                }
+                entry.stdoutDrainer.join(1000)
+                entry.stderrDrainer.join(1000)
+                onExit?.invoke(entry.toStatus(), mode)
+            }.apply {
+                isDaemon = true
+                name = "bg-waiter-$id"
+                start()
+            }
+
             return entry.toStatus()
         }
     }
@@ -165,6 +190,7 @@ class WorkspaceBackgroundProcesses(
             stderr = stderrText,
             droppedStdout = stdoutDropped,
             droppedStderr = stderrDropped,
+            mode = mode,
         )
     }
 
@@ -175,6 +201,7 @@ class WorkspaceBackgroundProcesses(
         val command: String,
         val cwd: String,
         val startedAtMillis: Long,
+        val mode: String = "job",
     ) {
         val stdout = TailBuffer(MAX_BG_OUTPUT_CHARS)
         val stderr = TailBuffer(MAX_BG_OUTPUT_CHARS)

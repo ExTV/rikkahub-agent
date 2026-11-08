@@ -334,16 +334,40 @@ fun SettingPreferencesGeneralPage(vm: SettingVM = koinViewModel()) {
                         },
                     )
                     item(
-                        headlineContent = { Text(stringResource(R.string.setting_display_page_auto_play_tts_title)) },
-                        supportingContent = { Text(stringResource(R.string.setting_display_page_auto_play_tts_desc)) },
+                        headlineContent = { Text(stringResource(R.string.setting_display_page_show_message_jumper_title)) },
+                        supportingContent = { Text(stringResource(R.string.setting_display_page_show_message_jumper_desc)) },
                         trailingContent = {
                             Switch(
-                                checked = displaySetting.autoPlayTTSAfterGeneration,
+                                checked = displaySetting.showMessageJumper,
                                 onCheckedChange = {
-                                    updateDisplaySetting(displaySetting.copy(autoPlayTTSAfterGeneration = it))
+                                    updateDisplaySetting(displaySetting.copy(showMessageJumper = it))
                                 }
                             )
                         },
+                    )
+                }
+            }
+
+            item {
+                val agentPrefs = org.koin.compose.koinInject<me.rerere.rikkahub.data.preferences.AgentPreferences>()
+                val scope = rememberCoroutineScope()
+                var unrestricted by remember { mutableStateOf(me.rerere.rikkahub.data.ai.limits.ToolRuntimeLimits.unrestrictedLongTasks) }
+                CardGroup(
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    title = { Text("Agent Runtime & Watchdog") }
+                ) {
+                    item(
+                        headlineContent = { Text("Unrestricted Long Tasks") },
+                        supportingContent = { Text("Allow long-running agent tasks to execute up to 4 hours while enforcing the idle progress watchdog") },
+                        trailingContent = {
+                            Switch(
+                                checked = unrestricted,
+                                onCheckedChange = {
+                                    unrestricted = it
+                                    scope.launch { agentPrefs.setUnrestrictedLongTasks(it) }
+                                }
+                            )
+                        }
                     )
                 }
             }

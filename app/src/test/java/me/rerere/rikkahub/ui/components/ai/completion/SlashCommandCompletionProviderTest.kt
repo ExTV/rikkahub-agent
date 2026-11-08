@@ -18,17 +18,18 @@ class SlashCommandCompletionProviderTest {
         // Typing "/"
         val result = provider.complete(ChatCompletionContext("/", TextRange(1)))
         assertNotNull(result)
-        assertEquals(1, result!!.items.size)
-        assertEquals("/plan", result.items[0].label)
+        // Must contain /plan, must NOT contain /build
+        assert(result!!.items.any { it.label == "/plan" })
+        assert(result.items.none { it.label == "/build" })
 
         // Typing "/p"
         val pResult = provider.complete(ChatCompletionContext("/p", TextRange(2)))
         assertNotNull(pResult)
         assertEquals("/plan", pResult!!.items[0].label)
 
-        // Typing "/b" in Build mode returns nothing (/build is never offered)
-        val bResult = provider.complete(ChatCompletionContext("/b", TextRange(2)))
-        assertNull(bResult)
+        // Typing "/bu" in Build mode returns no /build
+        val bResult = provider.complete(ChatCompletionContext("/bu", TextRange(3)))
+        assert(bResult == null || bResult.items.none { it.label == "/build" })
     }
 
     @Test
@@ -39,17 +40,18 @@ class SlashCommandCompletionProviderTest {
         // Typing "/"
         val result = provider.complete(ChatCompletionContext("/", TextRange(1)))
         assertNotNull(result)
-        assertEquals(1, result!!.items.size)
-        assertEquals("/build", result.items[0].label)
+        // Must contain /build, must NOT contain /plan
+        assert(result!!.items.any { it.label == "/build" })
+        assert(result.items.none { it.label == "/plan" })
 
-        // Typing "/b"
+        // Typing "/b" suggests /build (and /browser)
         val bResult = provider.complete(ChatCompletionContext("/b", TextRange(2)))
         assertNotNull(bResult)
-        assertEquals("/build", bResult!!.items[0].label)
+        assert(bResult!!.items.any { it.label == "/build" })
 
-        // Typing "/p" in Plan mode returns nothing (/plan is never offered)
-        val pResult = provider.complete(ChatCompletionContext("/p", TextRange(2)))
-        assertNull(pResult)
+        // Typing "/pl" in Plan mode returns no /plan
+        val pResult = provider.complete(ChatCompletionContext("/pl", TextRange(3)))
+        assert(pResult == null || pResult.items.none { it.label == "/plan" })
     }
 
     @Test

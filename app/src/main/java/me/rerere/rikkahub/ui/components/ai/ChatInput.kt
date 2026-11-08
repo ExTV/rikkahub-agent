@@ -283,11 +283,11 @@ fun ChatInput(
                                 modifier = Modifier,
                             )
 
-                            // Search
+                            // Tools Popover (Web Search + Studio Image Gen)
                             val enableSearchMsg = stringResource(R.string.web_search_enabled)
                             val disableSearchMsg = stringResource(R.string.web_search_disabled)
                             val chatModel = settings.getCurrentChatModel()
-                            SearchPickerButton(
+                            ToolsPickerButton(
                                 enableSearch = enableSearch,
                                 settings = settings,
                                 onUpdateSearchMode = { mode ->
@@ -542,6 +542,29 @@ private fun TextInputRow(
             )
         }
 
+        if (state.actionPill != null || state.skillPills.isNotEmpty()) {
+            androidx.compose.foundation.layout.FlowRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                state.actionPill?.let { pill ->
+                    ActionPillChip(
+                        pill = pill,
+                        onDismiss = { state.removeAction() }
+                    )
+                }
+                state.skillPills.forEach { skill ->
+                    ActionPillChip(
+                        pill = skill,
+                        onDismiss = { state.removeSkill(skill.id) }
+                    )
+                }
+            }
+        }
+
         TextField(
             state = state.textContent,
             modifier = Modifier
@@ -719,9 +742,65 @@ private fun ChatInputState.applyCompletion(
     val textLength = textContent.text.length
     val start = replacementRange.min.coerceIn(0, textLength)
     val end = replacementRange.max.coerceIn(start, textLength)
-    textContent.edit {
-        replace(start, end, item.insertText)
-        selection = TextRange(start + item.insertText.length)
+
+    if (item.label.startsWith("/skill ")) {
+        val skillName = item.label.removePrefix("/skill ").trim()
+        addSkill(skillName, item.icon ?: HugeIcons.Code)
+        textContent.edit {
+            replace(start, end, "")
+            selection = TextRange(start)
+        }
+    } else if (item.label.startsWith("/")) {
+        val actionId = item.label.removePrefix("/").trim()
+        setAction(actionId, actionId, item.icon ?: HugeIcons.Tools)
+        textContent.edit {
+            replace(start, end, "")
+            selection = TextRange(start)
+        }
+    } else {
+        textContent.edit {
+            replace(start, end, item.insertText)
+            selection = TextRange(start + item.insertText.length)
+        }
+    }
+}
+
+@Composable
+private fun ActionPillChip(
+    pill: me.rerere.rikkahub.ui.hooks.ActionPill,
+    onDismiss: () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Icon(
+                imageVector = pill.icon,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                text = pill.label,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Icon(
+                imageVector = HugeIcons.Cancel01,
+                contentDescription = "Remove",
+                modifier = Modifier
+                    .size(14.dp)
+                    .clickable(onClick = onDismiss),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

@@ -73,6 +73,8 @@ import me.rerere.hugeicons.stroke.ArrowRight01
 import me.rerere.hugeicons.stroke.ArrowTurnBackward
 import me.rerere.hugeicons.stroke.Bash
 import me.rerere.hugeicons.stroke.ComputerTerminal01
+import me.rerere.hugeicons.stroke.Download04
+import me.rerere.hugeicons.stroke.DatabaseRestore
 import me.rerere.hugeicons.stroke.Delete01
 import me.rerere.hugeicons.stroke.File02
 import me.rerere.hugeicons.stroke.FileImport
@@ -151,6 +153,24 @@ fun WorkspaceDetailPage(id: String) {
         vm.exportFolder(entry, destinationTree) { docUri -> context.contentResolver.openOutputStream(docUri) }
     }
 
+    val archiveExportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/gzip"),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val outputStream = context.contentResolver.openOutputStream(uri) ?: return@rememberLauncherForActivityResult
+        vm.exportWorkspaceArchive(outputStream)
+        Toast.makeText(context, "Exporting workspace archive (.tar.gz)...", Toast.LENGTH_SHORT).show()
+    }
+
+    val archiveImportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val inputStream = context.contentResolver.openInputStream(uri) ?: return@rememberLauncherForActivityResult
+        vm.importWorkspaceArchive(inputStream)
+        Toast.makeText(context, "Importing workspace archive (.tar.gz)...", Toast.LENGTH_SHORT).show()
+    }
+
     BackHandler(enabled = pagerState.currentPage == 1 && state.path.isNotBlank()) {
         vm.goUp()
     }
@@ -188,6 +208,12 @@ fun WorkspaceDetailPage(id: String) {
                                 HugeIcons.FileImport,
                                 contentDescription = stringResource(R.string.workspace_detail_import_file),
                             )
+                        }
+                        IconButton(onClick = { archiveExportLauncher.launch("workspace_${state.workspace?.name ?: "backup"}.tar.gz") }) {
+                            Icon(HugeIcons.Download04, contentDescription = "Backup Workspace (.tar.gz)")
+                        }
+                        IconButton(onClick = { archiveImportLauncher.launch(arrayOf("application/gzip", "application/x-tar", "application/octet-stream", "*/*")) }) {
+                            Icon(HugeIcons.DatabaseRestore, contentDescription = "Restore Workspace (.tar.gz)")
                         }
                     }
                     IconButton(onClick = { vm.refresh() }) {

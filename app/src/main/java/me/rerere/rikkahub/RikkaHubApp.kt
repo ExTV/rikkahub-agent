@@ -380,6 +380,7 @@ class RikkaHubApp : Application() {
     // constructed TermuxPreferences transitively; kept independent in case that chain changes.
     private fun eagerlyInitTermuxPreferences() {
         try {
+            get<me.rerere.rikkahub.data.preferences.AgentPreferences>()
             get<me.rerere.rikkahub.data.preferences.TermuxPreferences>()
         } catch (t: Throwable) {
             Log.e(TAG, "eagerlyInitTermuxPreferences failed", t)

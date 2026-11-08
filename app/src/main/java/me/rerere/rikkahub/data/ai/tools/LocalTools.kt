@@ -777,6 +777,14 @@ class LocalTools(
     ): List<Tool> {
         val tools = mutableListOf<Tool>()
         tools.add(createProposePlanTool(invocationContext))
+        tools.add(
+            me.rerere.rikkahub.data.ai.tools.local.createGenerateImageTool(
+                context = context,
+                settingsStore = settingsStore,
+                okHttpClient = okHttpClient,
+                json = json,
+            )
+        )
         if (options.contains(LocalToolOption.JavascriptEngine)) {
             tools.add(javascriptTool)
         }

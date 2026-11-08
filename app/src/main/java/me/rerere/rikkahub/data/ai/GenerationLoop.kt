@@ -528,17 +528,21 @@ class GenerationLoop(
         }
 
         val turnStartMs = android.os.SystemClock.elapsedRealtime()
+        var lastActivityMs = turnStartMs
         var loopGuardTripCount = 0
 
         for (stepIndex in 0 until maxSteps) {
-            // Wall-clock cap: any single user turn that has been running longer than the
-            // budget is force-ended, regardless of whether the model wants more steps.
-            // This is the second line of defence after maxSteps; without it a model that
-            // discovers many distinct tool calls (each within the loop guard) can still
-            // run for hours.
-            val elapsedMs = android.os.SystemClock.elapsedRealtime() - turnStartMs
-            if (elapsedMs > ToolRuntimeLimits.turnBudgetMs) {
-                Log.w(TAG, "generateText: wall-clock cap (${ToolRuntimeLimits.turnBudgetMs}ms) hit at step #$stepIndex; force-ending turn")
+            val now = android.os.SystemClock.elapsedRealtime()
+            val totalElapsedMs = now - turnStartMs
+            val idleElapsedMs = now - lastActivityMs
+            val maxTurnDurationMs = ToolRuntimeLimits.effectiveMaxTurnDurationMs()
+
+            if (totalElapsedMs > maxTurnDurationMs) {
+                Log.w(TAG, "generateText: max turn duration (${maxTurnDurationMs}ms) hit at step #$stepIndex; force-ending turn")
+                break
+            }
+            if (idleElapsedMs > ToolRuntimeLimits.idleTimeoutMs) {
+                Log.w(TAG, "generateText: idle timeout (${ToolRuntimeLimits.idleTimeoutMs}ms) exceeded at step #$stepIndex; force-ending stalled turn")
                 break
             }
             // Repeated loop-guard trips mean the model is flailing: it bumps into the
@@ -1051,33 +1055,31 @@ class GenerationLoop(
                                     emit(GenerationChunk.Messages(messages))
                                 }
                             }
-                            // Hard-cap individual tool execution at the remaining wall-clock
-                            // budget so a single tool with its OWN long timeout (camera 5min,
-                            // ssh_exec timeout_seconds=300) can't carry the turn past the
-                            // global ${ToolRuntimeLimits.turnBudgetMs}ms cap. If the budget is
-                            // already blown when we start the tool, return a structured
-                            // wall-clock envelope instead of even attempting.
-                            val remainingMs = ToolRuntimeLimits.turnBudgetMs -
-                                (android.os.SystemClock.elapsedRealtime() - turnStartMs)
+                            val toolExecStart = android.os.SystemClock.elapsedRealtime()
+                            val maxTurnDurationMs = ToolRuntimeLimits.effectiveMaxTurnDurationMs()
+                            val totalRemainingMs = maxTurnDurationMs - (toolExecStart - turnStartMs)
+                            val idleRemainingMs = ToolRuntimeLimits.idleTimeoutMs - (toolExecStart - lastActivityMs)
+                            val remainingMs = minOf(totalRemainingMs, idleRemainingMs)
                             val result = if (remainingMs <= 0L) {
-                                Log.w(TAG, "generateText: ${toolDef.name} skipped — wall-clock budget already exceeded")
+                                Log.w(TAG, "generateText: ${toolDef.name} skipped — budget exceeded before tool started")
                                 listOf(UIMessagePart.Text(json.encodeToString(buildJsonObject {
                                     put("error", JsonPrimitive("tool_cancelled_wall_clock"))
-                                    put("detail", JsonPrimitive("turn budget exceeded before tool started"))
+                                    put("detail", JsonPrimitive("turn or idle budget exceeded before tool started"))
                                 })))
                             } else {
                                 withTimeoutOrNull(remainingMs) { toolDef.execute(args) }
                                     ?: run {
-                                        Log.w(TAG, "generateText: ${toolDef.name} cancelled — wall-clock budget exhausted mid-execution")
+                                        Log.w(TAG, "generateText: ${toolDef.name} cancelled — budget exhausted mid-execution")
                                         listOf(UIMessagePart.Text(json.encodeToString(buildJsonObject {
                                             put("error", JsonPrimitive("tool_cancelled_wall_clock"))
                                             put(
                                                 "detail",
-                                                JsonPrimitive("tool execution exceeded the ${ToolRuntimeLimits.turnBudgetMs / 1000}s turn budget")
+                                                JsonPrimitive("tool execution exceeded the ${remainingMs / 1000}s budget")
                                             )
                                         })))
                                     }
                             }
+                            lastActivityMs = android.os.SystemClock.elapsedRealtime()
                             // Upstream tool-output truncation: when the workspace shell is
                             // available, oversized text output is spilled to /tool_outputs/
                             // and replaced with a preview + read/grep instructions so the

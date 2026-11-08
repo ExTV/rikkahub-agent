@@ -538,18 +538,18 @@ private fun MessagePartsBlock(
                         if (isImageLoading) {
                             Box(
                                 modifier = Modifier
-                                    .size(72.dp)
-                                    .clip(MaterialTheme.shapes.medium)
+                                    .fillMaxWidth()
+                                    .heightIn(min = 160.dp, max = 320.dp)
+                                    .clip(RoundedCornerShape(12.dp))
                                     .background(MaterialTheme.colorScheme.surfaceVariant)
                                     .shimmer(isLoading = true)
                             )
                         } else {
-                            ZoomableAsyncImage(
-                                model = part.url,
-                                contentDescription = null,
+                            AdaptiveMediaCard(
+                                imageUrl = part.url,
                                 modifier = Modifier
-                                    .clip(MaterialTheme.shapes.medium)
-                                    .height(72.dp)
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp)
                             )
                         }
                     }

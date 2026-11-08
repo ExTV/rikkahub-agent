@@ -243,7 +243,13 @@ class WorkspaceManager(
      * [backgroundStatus]/[killBackground]. Throws IllegalStateException if [root] is
      * already at the running-process cap.
      */
-    fun startBackground(root: String, command: String, cwd: String = ""): BackgroundStatus =
+    fun startBackground(
+        root: String,
+        command: String,
+        cwd: String = "",
+        mode: String = "job",
+        onExit: ((status: BackgroundStatus, mode: String) -> Unit)? = null,
+    ): BackgroundStatus =
         synchronized(backgroundLifecycleLock) {
             require(command.isNotBlank()) { "Command is required" }
             val workingDir = resolveCommandWorkingDir(root, cwd)
@@ -260,7 +266,7 @@ class WorkspaceManager(
                     timeoutMillis = 0L,
                 )
             )
-            background.start(root, process, command, cwd)
+            background.start(root, process, command, cwd, mode, onExit)
         }
 
     fun backgroundStatus(root: String, id: String): BackgroundStatus? = background.status(root, id)

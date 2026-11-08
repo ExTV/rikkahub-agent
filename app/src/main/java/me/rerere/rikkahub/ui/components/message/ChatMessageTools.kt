@@ -767,10 +767,11 @@ private fun ChainOfThoughtScope.ProposePlanToolStep(
     loading: Boolean,
     onToolApproval: ((toolCallId: String, approved: Boolean, reason: String, scope: me.rerere.rikkahub.service.ChatService.ApprovalScope, toolName: String) -> Unit)?,
 ) {
-    val isPending = tool.isPending
-    val isApproved = tool.approvalState is ToolApprovalState.Approved
+    var optimisticApproved by remember(tool.approvalState) { mutableStateOf(false) }
+    val isPending = tool.isPending && !optimisticApproved
     val isDenied = tool.approvalState is ToolApprovalState.Denied
     val arguments = tool.inputAsJson()
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
 
     val planTitle = remember(arguments) {
         arguments.jsonObject["title"]?.jsonPrimitive?.contentOrNull ?: "Implementation Plan"
@@ -854,10 +855,12 @@ private fun ChainOfThoughtScope.ProposePlanToolStep(
                 }
 
                 if (planMarkdown.isNotBlank()) {
-                    MarkdownBlock(
-                        content = planMarkdown,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                    androidx.compose.runtime.key(planMarkdown) {
+                        MarkdownBlock(
+                            content = planMarkdown,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                 }
 
                 if (isApproved) {
@@ -904,6 +907,8 @@ private fun ChainOfThoughtScope.ProposePlanToolStep(
                     ) {
                         FilledTonalButton(
                             onClick = {
+                                haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                optimisticApproved = true
                                 onToolApproval(
                                     tool.toolCallId,
                                     true,
